@@ -120,3 +120,9 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 - `include/ui.h`      — both screens
 - `src/font_glucose_200.c` — Montserrat-Medium 200px digits (`lv_font_conv`)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example
+
+## Support
+
+If this saved you some time, you can [buy me a coffee on Ko-fi](https://ko-fi.com/mobreadmeo).
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mobreadmeo)
