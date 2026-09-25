@@ -1,0 +1,415 @@
+// UI: "big number" screen + "graph" screen
+#pragma once
+
+#include <lvgl.h>
+#include "glucose.h"
+
+LV_FONT_DECLARE(font_glucose_200);
+
+namespace ui {
+
+// ---------- palette ----------
+static const lv_color_t C_BG      = lv_color_hex(0x0B0F14);
+static const lv_color_t C_PANEL   = lv_color_hex(0x161C24);
+static const lv_color_t C_TEXT    = lv_color_hex(0xE6EDF3);
+static const lv_color_t C_MUTED   = lv_color_hex(0x7D8590);
+static const lv_color_t C_OK      = lv_color_hex(0x3FB950);
+static const lv_color_t C_LOW     = lv_color_hex(0xF85149);
+static const lv_color_t C_HIGH    = lv_color_hex(0xF0883E);
+static const lv_color_t C_STALE   = lv_color_hex(0x6E7681);
+static const lv_color_t C_ACCENT  = lv_color_hex(0x58A6FF);
+
+static lv_color_t color_for(int v, bool stale) {
+  if (stale) return C_STALE;
+  if (v < GLUCOSE_LOW) return C_LOW;
+  if (v > GLUCOSE_HIGH) return C_HIGH;
+  return C_OK;
+}
+
+// ---------- trend arrow (lv_line rotated) ----------
+struct Arrow {
+  lv_obj_t *line1 = nullptr;  // second arrow for double up/down
+  lv_obj_t *line2 = nullptr;
+  int size = 0;
+};
+
+static lv_point_precise_t arrow_pts[5];
+
+static lv_obj_t *make_arrow_line(lv_obj_t *parent, int size) {
+  // arrow pointing right, centered on (size/2, size/2)
+  float s = size, h = s / 2;
+  static lv_point_precise_t *pts = nullptr;
+  pts = (lv_point_precise_t *)lv_malloc(sizeof(lv_point_precise_t) * 5);
+  pts[0] = {(lv_value_precise_t)(s * 0.10f), (lv_value_precise_t)h};
+  pts[1] = {(lv_value_precise_t)(s * 0.90f), (lv_value_precise_t)h};
+  pts[2] = {(lv_value_precise_t)(s * 0.55f), (lv_value_precise_t)(h - s * 0.35f)};
+  pts[3] = {(lv_value_precise_t)(s * 0.90f), (lv_value_precise_t)h};
+  pts[4] = {(lv_value_precise_t)(s * 0.55f), (lv_value_precise_t)(h + s * 0.35f)};
+  lv_obj_t *l = lv_line_create(parent);
+  lv_line_set_points(l, pts, 5);
+  lv_obj_set_size(l, size, size);
+  lv_obj_set_style_line_width(l, size / 9, 0);
+  lv_obj_set_style_line_rounded(l, true, 0);
+  lv_obj_set_style_transform_pivot_x(l, size / 2, 0);
+  lv_obj_set_style_transform_pivot_y(l, size / 2, 0);
+  return l;
+}
+
+static Arrow make_arrow(lv_obj_t *parent, int size) {
+  Arrow a;
+  a.size = size;
+  a.line1 = make_arrow_line(parent, size);
+  a.line2 = make_arrow_line(parent, size);
+  return a;
+}
+
+static void arrow_set(Arrow &a, Trend t, lv_color_t color) {
+  int angle = 0;  // degrees, clockwise; 0 = right
+  bool dbl = false, show = true;
+  switch (t) {
+    case TREND_DOUBLE_UP:   angle = -90; dbl = true; break;
+    case TREND_SINGLE_UP:   angle = -90; break;
+    case TREND_45_UP:       angle = -45; break;
+    case TREND_FLAT:        angle = 0;   break;
+    case TREND_45_DOWN:     angle = 45;  break;
+    case TREND_SINGLE_DOWN: angle = 90;  break;
+    case TREND_DOUBLE_DOWN: angle = 90;  dbl = true; break;
+    default: show = false;
+  }
+  lv_obj_t *ls[2] = {a.line1, a.line2};
+  for (int i = 0; i < 2; i++) {
+    lv_obj_set_style_line_color(ls[i], color, 0);
+    lv_obj_set_style_transform_rotation(ls[i], angle * 10, 0);
+  }
+  if (!show) { lv_obj_add_flag(a.line1, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(a.line2, LV_OBJ_FLAG_HIDDEN); return; }
+  lv_obj_remove_flag(a.line1, LV_OBJ_FLAG_HIDDEN);
+  if (dbl) {
+    lv_obj_remove_flag(a.line2, LV_OBJ_FLAG_HIDDEN);
+    int off = a.size * 0.28f;  // stack two arrows vertically
+    lv_obj_align(a.line1, LV_ALIGN_CENTER, 0, -off);
+    lv_obj_align(a.line2, LV_ALIGN_CENTER, 0, off);
+  } else {
+    lv_obj_add_flag(a.line2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(a.line1, LV_ALIGN_CENTER, 0, 0);
+  }
+}
+
+// ---------- state ----------
+static lv_obj_t *scr_big = nullptr;
+static lv_obj_t *scr_graph = nullptr;
+
+// big screen
+static lv_obj_t *big_value, *big_unit, *big_age, *big_hint, *big_arrow_box, *big_status;
+static Arrow big_arrow;
+
+// graph screen
+static lv_obj_t *g_value, *g_age, *g_arrow_box, *g_chart, *g_band, *g_stale, *g_status;
+static Arrow g_arrow;
+static lv_chart_series_t *g_series;
+static lv_obj_t *g_win_btns[5];
+static lv_obj_t *g_xlabels[3];
+static const int WINDOWS[5] = {1, 3, 6, 12, 24};
+static int g_window_idx = 1;  // 3h default
+static int32_t g_data[24 * 12 + 1];
+
+static const int CHART_X = 70, CHART_Y = 92, CHART_W = 800 - CHART_X - 20, CHART_H = 300;
+
+// ---------- helpers ----------
+static void fmt_age(char *out, size_t n, uint32_t age_s) {
+  if (age_s < 60) snprintf(out, n, "just now");
+  else if (age_s < 3600) snprintf(out, n, "%lu min ago", (unsigned long)(age_s / 60));
+  else snprintf(out, n, "%luh %lum ago", (unsigned long)(age_s / 3600), (unsigned long)((age_s % 3600) / 60));
+}
+
+static int chart_y_for(int v) {
+  return CHART_H * (CHART_Y_MAX - v) / (CHART_Y_MAX - CHART_Y_MIN);
+}
+
+// instant screen switch: the slide animation redraws the full screen ~30x, which hammers PSRAM
+static void goto_graph(lv_event_t *) { lv_screen_load(scr_graph); }
+static void goto_big(lv_event_t *)   { lv_screen_load(scr_big); }
+
+static void refresh_chart();
+
+static void on_window_btn(lv_event_t *e) {
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  g_window_idx = idx;
+  for (int i = 0; i < 5; i++) {
+    if (i == idx) lv_obj_add_state(g_win_btns[i], LV_STATE_CHECKED);
+    else lv_obj_remove_state(g_win_btns[i], LV_STATE_CHECKED);
+  }
+  refresh_chart();
+}
+
+static lv_obj_t *make_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud, int w) {
+  lv_obj_t *b = lv_button_create(parent);
+  lv_obj_set_size(b, w, 56);
+  lv_obj_set_style_bg_color(b, C_PANEL, 0);
+  lv_obj_set_style_bg_color(b, C_ACCENT, LV_STATE_CHECKED);
+  lv_obj_set_style_bg_color(b, lv_color_hex(0x2A3441), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_set_style_border_width(b, 0, 0);
+  lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+  lv_obj_t *l = lv_label_create(b);
+  lv_label_set_text(l, txt);
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(l, C_TEXT, 0);
+  lv_obj_center(l);
+  return b;
+}
+
+// ---------- build ----------
+static void build_big() {
+  scr_big = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(scr_big, C_BG, 0);
+  lv_obj_add_flag(scr_big, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(scr_big, goto_graph, LV_EVENT_CLICKED, nullptr);
+
+  big_value = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_value, &font_glucose_200, 0);
+  lv_obj_set_style_text_color(big_value, C_OK, 0);
+  lv_label_set_text(big_value, "---");
+  lv_obj_align(big_value, LV_ALIGN_CENTER, -60, -30);
+
+  big_arrow_box = lv_obj_create(scr_big);
+  lv_obj_remove_style_all(big_arrow_box);
+  lv_obj_set_size(big_arrow_box, 120, 160);
+  lv_obj_align(big_arrow_box, LV_ALIGN_CENTER, 230, -30);
+  big_arrow = make_arrow(big_arrow_box, 100);
+
+  big_unit = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_unit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(big_unit, C_MUTED, 0);
+  lv_label_set_text(big_unit, "mg/dL");
+  lv_obj_align(big_unit, LV_ALIGN_CENTER, 0, 105);
+
+  big_age = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_age, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(big_age, C_MUTED, 0);
+  lv_label_set_text(big_age, "");
+  lv_obj_align(big_age, LV_ALIGN_CENTER, 0, 150);
+
+  big_hint = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_hint, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(big_hint, lv_color_hex(0x3D444D), 0);
+  lv_label_set_text(big_hint, "tap for graph  " LV_SYMBOL_RIGHT);
+  lv_obj_align(big_hint, LV_ALIGN_BOTTOM_RIGHT, -20, -14);
+
+  big_status = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_status, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(big_status, C_MUTED, 0);
+  lv_label_set_text(big_status, "");
+  lv_obj_align(big_status, LV_ALIGN_BOTTOM_LEFT, 20, -14);
+}
+
+static void build_graph() {
+  scr_graph = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(scr_graph, C_BG, 0);
+
+  // ----- header -----
+  g_value = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_value, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(g_value, C_OK, 0);
+  lv_label_set_text(g_value, "---");
+  lv_obj_align(g_value, LV_ALIGN_TOP_LEFT, 24, 18);
+
+  g_arrow_box = lv_obj_create(scr_graph);
+  lv_obj_remove_style_all(g_arrow_box);
+  lv_obj_set_size(g_arrow_box, 60, 60);
+  lv_obj_align(g_arrow_box, LV_ALIGN_TOP_LEFT, 130, 14);
+  g_arrow = make_arrow(g_arrow_box, 44);
+
+  lv_obj_t *unit = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(unit, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(unit, C_MUTED, 0);
+  lv_label_set_text(unit, "mg/dL");
+  lv_obj_align(unit, LV_ALIGN_TOP_LEFT, 200, 20);
+
+  g_age = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_age, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(g_age, C_MUTED, 0);
+  lv_label_set_text(g_age, "");
+  lv_obj_align(g_age, LV_ALIGN_TOP_LEFT, 200, 48);
+
+  g_stale = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_stale, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(g_stale, C_LOW, 0);
+  lv_label_set_text(g_stale, LV_SYMBOL_WARNING "  NO RECENT DATA");
+  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, -24, 30);
+  lv_obj_add_flag(g_stale, LV_OBJ_FLAG_HIDDEN);
+
+  g_status = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_status, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(g_status, C_MUTED, 0);
+  lv_label_set_text(g_status, "");
+  lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, -24, 66);
+
+  // ----- chart -----
+  g_chart = lv_chart_create(scr_graph);
+  lv_obj_set_pos(g_chart, CHART_X, CHART_Y);
+  lv_obj_set_size(g_chart, CHART_W, CHART_H);
+  lv_obj_set_style_pad_all(g_chart, 0, 0);
+  lv_obj_set_style_radius(g_chart, 0, 0);
+  lv_obj_set_style_bg_color(g_chart, C_BG, 0);
+  lv_obj_set_style_border_width(g_chart, 0, 0);
+  lv_obj_set_style_line_color(g_chart, lv_color_hex(0x1F2733), 0);   // div lines
+  lv_obj_set_style_line_width(g_chart, 1, 0);
+  lv_chart_set_type(g_chart, LV_CHART_TYPE_LINE);
+  lv_chart_set_range(g_chart, LV_CHART_AXIS_PRIMARY_Y, CHART_Y_MIN, CHART_Y_MAX);
+  lv_chart_set_div_line_count(g_chart, 0, 0);
+  lv_obj_set_style_size(g_chart, 0, 0, LV_PART_INDICATOR);           // no dots
+  lv_obj_set_style_line_width(g_chart, 4, LV_PART_ITEMS);
+  lv_obj_set_style_line_rounded(g_chart, true, LV_PART_ITEMS);
+  lv_obj_remove_flag(g_chart, LV_OBJ_FLAG_SCROLLABLE);
+
+  // target band 70..200 (drawn underneath the series)
+  g_band = lv_obj_create(g_chart);
+  lv_obj_remove_style_all(g_band);
+  lv_obj_set_style_bg_color(g_band, C_OK, 0);
+  lv_obj_set_style_bg_opa(g_band, LV_OPA_10, 0);
+  lv_obj_set_pos(g_band, 0, chart_y_for(GLUCOSE_HIGH));
+  lv_obj_set_size(g_band, CHART_W, chart_y_for(GLUCOSE_LOW) - chart_y_for(GLUCOSE_HIGH));
+  lv_obj_move_background(g_band);
+
+  // threshold lines + y labels
+  const int yl[] = {GLUCOSE_HIGH, GLUCOSE_LOW};
+  for (int v : yl) {
+    lv_obj_t *ln = lv_obj_create(g_chart);
+    lv_obj_remove_style_all(ln);
+    lv_obj_set_style_bg_color(ln, v == GLUCOSE_HIGH ? C_HIGH : C_LOW, 0);
+    lv_obj_set_style_bg_opa(ln, LV_OPA_50, 0);
+    lv_obj_set_pos(ln, 0, chart_y_for(v));
+    lv_obj_set_size(ln, CHART_W, 2);
+    lv_obj_move_background(ln);
+  }
+  const int ylabels[] = {300, 250, 200, 150, 100, 70, 40};
+  for (int v : ylabels) {
+    lv_obj_t *l = lv_label_create(scr_graph);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(l, (v == GLUCOSE_HIGH) ? C_HIGH : (v == GLUCOSE_LOW) ? C_LOW : C_MUTED, 0);
+    lv_label_set_text_fmt(l, "%d", v);
+    lv_obj_set_width(l, CHART_X - 10);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(l, 0, CHART_Y + chart_y_for(v) - 8);
+  }
+  // x labels (start / mid / now)
+  for (int i = 0; i < 3; i++) {
+    g_xlabels[i] = lv_label_create(scr_graph);
+    lv_obj_set_style_text_font(g_xlabels[i], &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(g_xlabels[i], C_MUTED, 0);
+  }
+
+  g_series = lv_chart_add_series(g_chart, C_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+
+  // ----- bottom bar -----
+  make_btn(scr_graph, LV_SYMBOL_LEFT "  Back", goto_big, nullptr, 140);
+  lv_obj_align(lv_obj_get_child(scr_graph, -1), LV_ALIGN_BOTTOM_LEFT, 20, -14);
+
+  lv_obj_t *row = lv_obj_create(scr_graph);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, 5 * 88 + 4 * 10, 56);
+  lv_obj_align(row, LV_ALIGN_BOTTOM_RIGHT, -20, -14);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(row, 10, 0);
+  const char *names[5] = {"1h", "3h", "6h", "12h", "24h"};
+  for (int i = 0; i < 5; i++) {
+    g_win_btns[i] = make_btn(row, names[i], on_window_btn, (void *)(intptr_t)i, 88);
+    lv_obj_add_flag(g_win_btns[i], LV_OBJ_FLAG_CHECKABLE);
+  }
+  lv_obj_add_state(g_win_btns[g_window_idx], LV_STATE_CHECKED);
+}
+
+// ---------- refresh ----------
+static void refresh_chart() {
+  int hours = WINDOWS[g_window_idx];
+  int n = hours * 12 + 1;
+  glucose::window(hours, g_data, n, LV_CHART_POINT_NONE);
+  // color the series by current state
+  lv_chart_set_point_count(g_chart, n);
+  lv_chart_set_ext_y_array(g_chart, g_series, g_data);
+  lv_chart_refresh(g_chart);
+
+  char b[16];
+  snprintf(b, sizeof b, "-%dh", hours);
+  lv_label_set_text(g_xlabels[0], b);
+  lv_obj_set_pos(g_xlabels[0], CHART_X, CHART_Y + CHART_H + 4);
+  if (hours >= 2) snprintf(b, sizeof b, "-%dh", hours / 2); else snprintf(b, sizeof b, "-30m");
+  lv_label_set_text(g_xlabels[1], b);
+  lv_obj_align_to(g_xlabels[1], g_chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+  lv_label_set_text(g_xlabels[2], "now");
+  lv_obj_align_to(g_xlabels[2], g_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
+}
+
+// only redraw when the text actually changes (every redraw costs a PSRAM framebuffer copy)
+static void set_text_if_changed(lv_obj_t *l, const char *s) {
+  if (strcmp(lv_label_get_text(l), s) != 0) lv_label_set_text(l, s);
+}
+static void set_color_if_changed(lv_obj_t *l, lv_color_t c) {
+  lv_color_t cur = lv_obj_get_style_text_color(l, 0);
+  if (!lv_color_eq(cur, c)) lv_obj_set_style_text_color(l, c, 0);
+}
+
+static void refresh_values() {
+  const Reading *r = glucose::latest();
+  if (!r) {
+    set_text_if_changed(big_value, "---");
+    set_color_if_changed(big_value, C_STALE);
+    set_text_if_changed(big_age, "waiting for data");
+    set_text_if_changed(g_value, "---");
+    return;
+  }
+  uint32_t age = glucose::now() - r->ts;
+  bool stale = age > STALE_AFTER_S;
+  lv_color_t c = color_for(r->value, stale);
+  char age_s[32], val_s[8];
+  fmt_age(age_s, sizeof age_s, age);
+  snprintf(val_s, sizeof val_s, "%d", r->value);
+
+  set_text_if_changed(big_value, val_s);
+  set_color_if_changed(big_value, c);
+  set_text_if_changed(big_age, age_s);
+  set_color_if_changed(big_age, stale ? C_LOW : C_MUTED);
+  set_text_if_changed(g_value, val_s);
+  set_color_if_changed(g_value, c);
+  set_text_if_changed(g_age, age_s);
+  if (stale) lv_obj_remove_flag(g_stale, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(g_stale, LV_OBJ_FLAG_HIDDEN);
+}
+
+// arrows + chart colour only change on new data, not every second
+static void refresh_trend() {
+  const Reading *r = glucose::latest();
+  bool stale = r && (glucose::now() - r->ts > STALE_AFTER_S);
+  lv_color_t c = r ? color_for(r->value, stale) : C_STALE;
+  Trend t = r ? glucose::trend() : TREND_UNKNOWN;
+  arrow_set(big_arrow, t, c);
+  arrow_set(g_arrow, t, c);
+  lv_chart_set_series_color(g_chart, g_series, c);
+}
+
+static void on_tick(lv_timer_t *) { refresh_values(); }
+
+static void init() {
+  build_big();
+  build_graph();
+  refresh_values();
+  refresh_trend();
+  refresh_chart();
+  lv_timer_create(on_tick, 10000, nullptr);   // age text is minute-granular; no need to re-check every second
+  lv_screen_load(scr_big);
+}
+
+// call when a new reading arrives
+static void on_new_reading() {
+  refresh_values();
+  refresh_trend();
+  refresh_chart();
+}
+
+// connection / source status shown in the corner ("" = hide)
+static void set_status(const char *s) {
+  set_text_if_changed(big_status, s);
+  set_text_if_changed(g_status, s);
+}
+
+}  // namespace ui
