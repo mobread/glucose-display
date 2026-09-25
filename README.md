@@ -5,7 +5,8 @@ LVGL 9 firmware for the Elecrow CrowPanel Advance 7.0" (ESP32-S3-WROOM-1-N16R8, 
 - **Big screen**: current mg/dL in 200px digits, trend arrow, age of reading. Tap anywhere -> graph.
 - **Graph screen**: 1h / 3h / 6h / 12h / 24h history, target band 70-200 shaded, threshold lines, `Back` button.
 - Colors: red < 70, green 70-200, orange > 200, grey + warning banner if no reading for 15 min.
-- Currently fed by **Home Assistant** (`include/ha_source.h`): polls `sensor.dexcom_glucose_value` / `_trend` every 60 s, backfills 24 h from `/api/history/period` on boot. Needs `include/secrets.h` (gitignored) with WiFi + HA URL + long-lived token. HA must be reachable over **plain HTTP on the same subnet** — HTTPS fails (TLS needs ~40 KB contiguous internal RAM we don't have) and cross-VLAN was blocked.
+- Currently fed by **Home Assistant** (`include/ha_source.h`): polls `sensor.dexcom_glucose_value` / `_trend` every 60 s, backfills 24 h from `/api/history/period` on boot. Copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and fill in WiFi + HA URL + long-lived token. HA must be reachable over **plain HTTP on the same subnet** — HTTPS fails (TLS needs ~40 KB contiguous internal RAM we don't have) and cross-VLAN was blocked.
+- Brightness follows an HA helper `input_number.glucose_panel_brightness` (0–100), polled every 15 s — so night-dimming is just an HA automation.
 - `pio run -e dummy` builds a no-WiFi variant with a simulated generator instead.
 
 ## Display stability (hard-won)
@@ -23,7 +24,7 @@ The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes fo
 pioarduino's tool installer refuses to run when `MSYSTEM` is set, so run pio through cmd.exe with it cleared:
 
 ```sh
-cd C:/Users/micha/claude-projects/crowpanel/glucose-display
+cd <project dir>
 cmd.exe /c "set MSYSTEM=& set PATH=C:\Users\micha\.local\bin;%PATH%& pio run -t upload"
 ```
 
@@ -32,7 +33,7 @@ Serial monitor: `pio device monitor -p COM5 -b 115200` (same cmd.exe wrapper).
 ## Restore factory firmware
 
 ```sh
-esptool --port COM5 --baud 460800 write-flash 0 ../crowpanel_factory_backup.bin
+esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 ```
 
 ## Layout
