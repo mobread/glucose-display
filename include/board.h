@@ -74,6 +74,17 @@ static void ctrl_mcu_cmd(uint8_t cmd) {
 // brightness: 0 = brightest ... 245 = off (per Elecrow's V1.2+ helper MCU protocol)
 static void set_backlight_raw(uint8_t v) { ctrl_mcu_cmd(v); }
 
+// percent: 0 = off, 100 = brightest
+static void set_brightness(int pct) {
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  set_backlight_raw((uint8_t)(245 - (245 * pct) / 100));
+}
+
+#ifndef BACKLIGHT_PCT
+#define BACKLIGHT_PCT 10
+#endif
+
 static void power_init() {
   pinMode(19, OUTPUT);
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -103,7 +114,7 @@ static void power_init() {
     pinMode(1, INPUT);
     delay(100);
   }
-  set_backlight_raw(0);  // full brightness
+  set_brightness(BACKLIGHT_PCT);
 }
 
 // ---------- RGB panel via esp_lcd ----------

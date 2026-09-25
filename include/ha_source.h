@@ -69,13 +69,15 @@ static uint32_t parse_iso8601(const char *s) {
 
 static Trend parse_trend(const char *t) {
   if (!t) return TREND_UNKNOWN;
-  if (!strcmp(t, "rising quickly"))   return TREND_DOUBLE_UP;
+  // HA enum sensor states use underscores (e.g. "falling_slightly")
+  if (!strcmp(t, "rising_quickly"))   return TREND_DOUBLE_UP;
   if (!strcmp(t, "rising"))           return TREND_SINGLE_UP;
-  if (!strcmp(t, "rising slightly"))  return TREND_45_UP;
+  if (!strcmp(t, "rising_slightly"))  return TREND_45_UP;
   if (!strcmp(t, "steady"))           return TREND_FLAT;
-  if (!strcmp(t, "falling slightly")) return TREND_45_DOWN;
+  if (!strcmp(t, "falling_slightly")) return TREND_45_DOWN;
   if (!strcmp(t, "falling"))          return TREND_SINGLE_DOWN;
-  if (!strcmp(t, "falling quickly"))  return TREND_DOUBLE_DOWN;
+  if (!strcmp(t, "falling_quickly"))  return TREND_DOUBLE_DOWN;
+  Serial.printf("[ha] unknown trend '%s'\n", t);
   return TREND_UNKNOWN;
 }
 
