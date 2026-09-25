@@ -25,8 +25,10 @@ pioarduino's tool installer refuses to run when `MSYSTEM` is set, so run pio thr
 
 ```sh
 cd <project dir>
-cmd.exe /c "set MSYSTEM=& set PATH=C:\Users\micha\.local\bin;%PATH%& pio run -t upload"
+cmd.exe /c "set MSYSTEM=& pio run -t upload"
 ```
+
+(`pio` must be on PATH — `uv tool install platformio` puts it in `~/.local/bin`.)
 
 Serial monitor: `pio device monitor -p COM5 -b 115200` (same cmd.exe wrapper).
 
