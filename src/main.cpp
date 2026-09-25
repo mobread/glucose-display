@@ -5,6 +5,7 @@
 
 #if USE_HA
 #include "ha_source.h"
+static volatile int pending_brightness = -1;
 #endif
 
 void setup() {
@@ -14,6 +15,7 @@ void setup() {
   board::init();
 #if USE_HA
   ui::init();
+  ha::on_brightness = [](int pct) { pending_brightness = pct; };  // applied on the main loop (Wire isn't cross-core safe)
   ha::begin();
 #else
   glucose::dummy::init();
@@ -27,6 +29,10 @@ void setup() {
 void loop() {
 #if USE_HA
   static uint32_t last_status = 0;
+  if (pending_brightness >= 0) {
+    board::set_brightness(pending_brightness);
+    pending_brightness = -1;
+  }
   if (ha::take()) {
     const Reading *r = glucose::latest();
     if (r) Serial.printf("[glucose] %d mg/dL trend=%d\n", r->value, (int)glucose::trend());

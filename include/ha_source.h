@@ -85,6 +85,30 @@ static bool valid_state(const char *s) {
   return s && *s && strcmp(s, "unknown") && strcmp(s, "unavailable");
 }
 
+// ---------- settings from HA ----------
+static int http_get(const String &path, String &body);
+#ifndef HA_ENTITY_BRIGHTNESS
+#define HA_ENTITY_BRIGHTNESS "input_number.glucose_panel_brightness"
+#endif
+static const uint32_t SETTINGS_POLL_MS = 15 * 1000;
+static int applied_brightness = -1;
+static void (*on_brightness)(int pct) = nullptr;
+
+static void fetch_settings() {
+  String body;
+  if (http_get(String("/api/states/") + HA_ENTITY_BRIGHTNESS, body) != 200) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return;
+  const char *state = doc["state"];
+  if (!valid_state(state)) return;
+  int pct = (int)(atof(state) + 0.5f);
+  if (pct != applied_brightness) {
+    applied_brightness = pct;
+    Serial.printf("[ha] brightness -> %d%%\n", pct);
+    if (on_brightness) on_brightness(pct);
+  }
+}
+
 // ---------- HTTP ----------
 static int http_get(const String &path, String &body) {
   HTTPClient http;
@@ -161,7 +185,7 @@ static void task(void *) {
   while (time(nullptr) < 1700000000) vTaskDelay(pdMS_TO_TICKS(250));
 
   bool have_history = false;
-  uint32_t last_poll = 0;
+  uint32_t last_poll = 0, last_settings = 0;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       set_status("wifi lost");
@@ -182,6 +206,8 @@ static void task(void *) {
         have_history = true;
         set_status("");
         last_poll = millis();
+        fetch_settings();
+        last_settings = millis();
       } else {
         set_status("HA unreachable");
         vTaskDelay(pdMS_TO_TICKS(10000));
@@ -207,6 +233,10 @@ static void task(void *) {
       } else {
         set_status("HA unreachable");
       }
+    }
+    if (millis() - last_settings >= SETTINGS_POLL_MS) {
+      last_settings = millis();
+      fetch_settings();
     }
     vTaskDelay(pdMS_TO_TICKS(500));
   }
