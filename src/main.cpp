@@ -6,6 +6,10 @@
 #if USE_HA
 #include "ha_source.h"
 static volatile int pending_brightness = -1;
+#if defined(BOARD_WAVESHARE_P4_5)
+#define WIFI_SETUP_UI 1
+#include "ui_wifi.h"
+#endif
 #endif
 
 void setup() {
@@ -15,6 +19,9 @@ void setup() {
   board::init();
 #if USE_HA
   ui::init();
+#if WIFI_SETUP_UI
+  ui_wifi::init();
+#endif
   ha::on_brightness = [](int pct) { pending_brightness = pct; };  // applied on the main loop (Wire isn't cross-core safe)
   ha::begin();
 #else
@@ -38,6 +45,9 @@ void loop() {
     if (r) Serial.printf("[glucose] %d mg/dL trend=%d\n", r->value, (int)glucose::trend());
     ui::on_new_reading();
   }
+#if WIFI_SETUP_UI
+  ui_wifi::poll();
+#endif
   if (millis() - last_status > 1000) {
     last_status = millis();
     char s[48];

@@ -1,13 +1,18 @@
-# CrowPanel Advance 7.0" Glucose Display
+# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5")
 
-LVGL 9 firmware for the Elecrow CrowPanel Advance 7.0" (ESP32-S3-WROOM-1-N16R8, 800x480, GT911 touch).
+LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant. Two boards:
+
+| Board | PlatformIO env | Notes |
+|---|---|---|
+| Elecrow CrowPanel Advance 7.0" (ESP32-S3-WROOM-1-N16R8, 800x480 RGB, GT911) | `crowpanel-advance-7`, `dummy` | home LAN only |
+| Waveshare ESP32-P4-WIFI6-Touch-LCD-5 (ESP32-P4 rev3, 720x1280 MIPI-DSI HX8394, GT911, ESP32-C6 WiFi) | `waveshare-p4-5`, `waveshare-p4-5-dummy` | runs landscape 1280x720; on-device WiFi setup; optional WireGuard tunnel home — [details](#waveshare-esp32-p4-wifi6-touch-lcd-5) |
 
 - **Big screen**: current mg/dL in 200px digits, trend arrow, age of reading. Tap anywhere -> graph.
 - **Graph screen**: 1h / 3h / 6h / 12h / 24h history, target band 70-200 shaded, threshold lines, `Back` button.
 - Colors: red < 70, green 70-200, orange > 200, grey + warning banner if no reading for 15 min.
-- Currently fed by **Home Assistant** (`include/ha_source.h`): polls `sensor.dexcom_glucose_value` / `_trend` every 60 s, backfills 24 h from `/api/history/period` on boot. Copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and fill in WiFi + HA URL + long-lived token. HA must be reachable over **plain HTTP on the same subnet** — HTTPS fails (TLS needs ~40 KB contiguous internal RAM we don't have) and cross-VLAN was blocked.
+- Currently fed by **Home Assistant** (`include/ha_source.h`): polls `sensor.dexcom_glucose_value` / `_trend` every 60 s, backfills 24 h from `/api/history/period` on boot. Copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and fill in WiFi + HA URL + long-lived token. On the CrowPanel, HA must be reachable over **plain HTTP on the same subnet** — HTTPS fails (TLS needs ~40 KB contiguous internal RAM we don't have) and cross-VLAN was blocked. The Waveshare build can reach HA from anywhere through WireGuard (below).
 - Brightness follows an HA helper `input_number.glucose_panel_brightness` (0–100), polled every 15 s — so night-dimming is just an HA automation.
-- `pio run -e dummy` builds a no-WiFi variant with a simulated generator instead.
+- `pio run -e dummy` (or `-e waveshare-p4-5-dummy`) builds a no-WiFi variant with a simulated generator instead.
 
 ## Home Assistant setup
 
@@ -83,7 +88,53 @@ Serial monitor at 115200 after flashing should show:
 
 `trend=` values: 1 ⇈, 2 ↑, 3 ↗, 4 →, 5 ↘, 6 ↓, 7 ⇊. Until the first reading arrives the panel shows `---` / "waiting for data". If HA can't be reached, the corner reads "HA unreachable" and it keeps retrying.
 
-## Display stability (hard-won)
+## Waveshare ESP32-P4-WIFI6-Touch-LCD-5
+
+Same UI scaled 1.5x (`S()` in `ui.h`, 360px main digits), plus features for running away from home.
+
+### Board specifics
+
+- **Chip revision matters.** These boards ship with ESP32-P4 **rev3.x** silicon. The env uses pioarduino `55.03.313` (Arduino-ESP32 3.3.13 / ESP-IDF 5.5) and board `esp32-p4_r3` ("v3.00 or newer" variant). A pre-v3 build refuses to boot on it. Needs PlatformIO Core >= 6.2.
+- **Display**: 720x1280 portrait HX8394 over 2-lane MIPI-DSI (700 Mbps, 58 MHz DPI), init sequence from Waveshare's official LCD-5 examples, driven with esp_lcd directly (no Arduino_GFX). LVGL renders 1280x720 landscape into a 40-line internal-SRAM buffer; `flush_cb` rotates each strip into the single PSRAM framebuffer and writes back the cache once per refresh. `UI_ROTATE_90` in `board_waveshare_p4_5.h` flips which edge is up.
+- **Touch**: GT911 on I2C GPIO7/8, polled. Its reset (GPIO23) is pulsed on every boot — without it the controller can come up wedged after a soft reset — and it is re-reset automatically if it stops answering.
+- **Backlight**: LEDC PWM on GPIO26 (must be PWM; the path is AC-coupled). Same 0–100 HA brightness helper.
+- **WiFi** comes from the on-board ESP32-C6 via esp-hosted, through the normal Arduino `WiFi` API. **2.4 GHz only** (iPhone hotspots: turn on *Maximize Compatibility*).
+- LVGL uses the system heap (spills to PSRAM) instead of a fixed pool. Don't use LVGL style transforms (rotation) on large objects: each one renders through an ARGB8888 layer, and in LVGL 9.1 a failed layer allocation hangs the render loop — the trend arrows rotate their points in software for this reason.
+
+### WiFi setup on the device
+
+`include/wifi_mgr.h` + `include/ui_wifi.h`.
+
+- If no network is configured, or the configured one can't be joined and the panel hasn't been online since boot, the **WiFi setup screen opens by itself** (~20 s).
+- Any time: tap the main screen → graph → **WiFi** button next to `Back`.
+- Pick from the scanned list (strongest first) or type a hidden network's name; on-screen keyboard; eye button shows the password.
+- Credentials are saved to NVS **only after they actually connect**, so a typo can't replace a working network. Saved credentials win over `WIFI_SSID`/`WIFI_PASS` from `secrets.h`, which are just the fallback (leave them `""` to always start in setup). Reflashing keeps the saved network; `esptool erase-flash` clears it.
+- The built-in fonts are ASCII-only, so typographic quotes in SSIDs (iPhone hotspots use `’`) are shown as `'`; the exact name is still used to connect.
+
+### WireGuard tunnel home
+
+`include/wg_tunnel.h`, using [`esphome/wireguard`](https://github.com/esphome-libs/wireguard). Lets the panel reach HA's plain-HTTP LAN address from any network.
+
+1. On the WireGuard server, create a peer for the panel and export its wg-quick `.conf`.
+2. Copy the values into `secrets.h` (`WG_*` block; mapping is in `secrets.h.example`) and set `WG_ENABLE 1`.
+   `AllowedIPs` isn't needed — the panel routes everything through the tunnel.
+3. Keep `HA_BASE_URL` as the LAN address. A LAN-only hostname (e.g. `http://ha.home.lan:8123`) works when `WG_DNS` is set to the home DNS server (the `.conf`'s `DNS =`).
+4. The server must allow the panel's tunnel IP to reach HA on port 8123 (e.g. add it to the firewall alias/rule your other VPN clients use).
+
+How it runs: WiFi → NTP (handshakes fail with a wrong clock) → tunnel up → tunnel becomes the default route and `WG_DNS` the DNS server → HA polling as usual. WireGuard's own UDP stays bound to WiFi. After a WiFi reconnect or network change the route and DNS are re-applied (DHCP resets both); if the peer stays down 2 min the tunnel is rebuilt. Status corner shows `VPN connecting` / `VPN down` / `HA unreachable` / `WiFi: …`.
+
+Debugging: `PLATFORMIO_BUILD_FLAGS="-DWG_DEBUG -DLOG_LOCAL_LEVEL=4" pio run -e waveshare-p4-5 -t upload` prints the library's handshake log. `sending initiation packet` every 5 s with no `tunnel up` means the server isn't answering: check that the peer's public key on the server matches the panel's private key, and the firewall/port forward. Limitation: if the remote WiFi uses the same subnet as the home LAN, HA's address is treated as local and bypasses the tunnel.
+
+### Build / flash (macOS)
+
+```sh
+pio run -e waveshare-p4-5 -t upload --upload-port /dev/cu.usbmodem*   # use the board's UART USB-C port
+pio device monitor -p /dev/cu.usbmodem* -b 115200
+```
+
+Long flash reads/writes through a USB hub can fail with "serial noise or corruption"; 460800 baud is reliable, or read in 1 MB chunks. Restore the factory image with `esptool --port <port> --baud 460800 write-flash 0 <backup>.bin` (factory partitions span the first 16 MB).
+
+## Display stability (CrowPanel, hard-won)
 
 The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes for that bus and shows up as flicker/artifacts. What works:
 
@@ -93,7 +144,7 @@ The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes fo
 - `WiFi.persistent(false)` (no NVS flash writes), `WiFi.setSleep(false)`.
 - If it ever regresses: Elecrow's `ESP32S3_120M` prebuilt libs (PSRAM 120 MHz + `SPIRAM_FETCH_INSTRUCTIONS`/`RODATA`) are the next lever.
 
-## Build / flash (Windows, from git-bash)
+## Build / flash (CrowPanel, Windows, from git-bash)
 
 pioarduino's tool installer refuses to run when `MSYSTEM` is set, so run pio through cmd.exe with it cleared:
 
@@ -114,11 +165,17 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 
 ## Layout
 
-- `include/board.h`   — display (esp_lcd RGB, single PSRAM framebuffer + LVGL partial render), GT911 touch, backlight (V1.0 TCA9534 or V1.2+ ctrl MCU @0x30)
+- `include/board.h`   — picks the board header (`BOARD_WAVESHARE_P4_5` or CrowPanel)
+- `include/board_crowpanel.h` — display (esp_lcd RGB, single PSRAM framebuffer + LVGL partial render), GT911 touch, backlight (V1.0 TCA9534 or V1.2+ ctrl MCU @0x30)
+- `include/board_waveshare_p4_5.h` — MIPI-DSI HX8394 panel, rotated flush, GT911 touch with reset, LEDC backlight
 - `include/glucose.h` — ring buffer, thresholds, trend calc, windowing, dummy source
-- `include/ha_source.h` — WiFi/NTP, HA REST polling (readings, history backfill, brightness setting)
-- `include/ui.h`      — both screens
-- `src/font_glucose_200.c` — Montserrat-Medium 200px digits (`lv_font_conv`)
+- `include/ha_source.h` — NTP, HA REST polling (readings, history backfill, brightness setting)
+- `include/wifi_mgr.h` — WiFi connection + NVS-saved credentials, scan/connect requests from the UI
+- `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare build)
+- `include/ui.h`      — big-number and graph screens, scaled by `S()` for the panel size
+- `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
+- `src/font_glucose_200.c` / `_360.c` / `_72.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header
+- `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example
 
 ## Support

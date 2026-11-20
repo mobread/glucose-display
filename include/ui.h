@@ -2,9 +2,42 @@
 #pragma once
 
 #include <lvgl.h>
+#include <math.h>
 #include "glucose.h"
 
+#ifndef UI_W
+#define UI_W 800
+#define UI_H 480
+#endif
+
+// Layout is designed at 800x480; S() scales it for bigger panels (1280x720 -> 1.5x).
+#if UI_H >= 720
+#define S(v) ((v) * 3 / 2)
+LV_FONT_DECLARE(font_glucose_360);
+LV_FONT_DECLARE(font_glucose_72);
+#define FONT_HUGE  (&font_glucose_360)
+// main number is a bit larger than a straight 1.5x scale, so nudge it left and the arrow right
+#define BIG_VALUE_X (-110)
+#define BIG_VALUE_Y (-50)
+#define BIG_ARROW_X 370
+#define FONT_VALUE (&font_glucose_72)      // digits / '-' only
+#define FONT_14    (&lv_font_montserrat_22)
+#define FONT_20    (&lv_font_montserrat_30)
+#define FONT_24    (&lv_font_montserrat_36)
+#define FONT_28    (&lv_font_montserrat_42)
+#else
+#define S(v) (v)
 LV_FONT_DECLARE(font_glucose_200);
+#define FONT_HUGE  (&font_glucose_200)
+#define BIG_VALUE_X (-60)
+#define BIG_VALUE_Y (-30)
+#define BIG_ARROW_X 230
+#define FONT_VALUE (&lv_font_montserrat_48)
+#define FONT_14    (&lv_font_montserrat_14)
+#define FONT_20    (&lv_font_montserrat_20)
+#define FONT_24    (&lv_font_montserrat_24)
+#define FONT_28    (&lv_font_montserrat_28)
+#endif
 
 namespace ui {
 
@@ -26,41 +59,44 @@ static lv_color_t color_for(int v, bool stale) {
   return C_OK;
 }
 
-// ---------- trend arrow (lv_line rotated) ----------
+// ---------- trend arrow ----------
+// Points are rotated in software rather than with LVGL style transforms: a transformed object is
+// rendered through an ARGB8888 off-screen layer (size^2 * 4 bytes each), which at 1.5x scale
+// exhausts LV_MEM_SIZE and LVGL 9.1 then waits forever for the allocation.
 struct Arrow {
-  lv_obj_t *line1 = nullptr;  // second arrow for double up/down
-  lv_obj_t *line2 = nullptr;
+  lv_obj_t *line[2] = {nullptr, nullptr};   // second arrow for double up/down
+  lv_point_precise_t pts[2][5];
   int size = 0;
 };
 
-static lv_point_precise_t arrow_pts[5];
-
 static lv_obj_t *make_arrow_line(lv_obj_t *parent, int size) {
-  // arrow pointing right, centered on (size/2, size/2)
-  float s = size, h = s / 2;
-  static lv_point_precise_t *pts = nullptr;
-  pts = (lv_point_precise_t *)lv_malloc(sizeof(lv_point_precise_t) * 5);
-  pts[0] = {(lv_value_precise_t)(s * 0.10f), (lv_value_precise_t)h};
-  pts[1] = {(lv_value_precise_t)(s * 0.90f), (lv_value_precise_t)h};
-  pts[2] = {(lv_value_precise_t)(s * 0.55f), (lv_value_precise_t)(h - s * 0.35f)};
-  pts[3] = {(lv_value_precise_t)(s * 0.90f), (lv_value_precise_t)h};
-  pts[4] = {(lv_value_precise_t)(s * 0.55f), (lv_value_precise_t)(h + s * 0.35f)};
   lv_obj_t *l = lv_line_create(parent);
-  lv_line_set_points(l, pts, 5);
   lv_obj_set_size(l, size, size);
   lv_obj_set_style_line_width(l, size / 9, 0);
   lv_obj_set_style_line_rounded(l, true, 0);
-  lv_obj_set_style_transform_pivot_x(l, size / 2, 0);
-  lv_obj_set_style_transform_pivot_y(l, size / 2, 0);
   return l;
 }
 
 static Arrow make_arrow(lv_obj_t *parent, int size) {
   Arrow a;
   a.size = size;
-  a.line1 = make_arrow_line(parent, size);
-  a.line2 = make_arrow_line(parent, size);
+  a.line[0] = make_arrow_line(parent, size);
+  a.line[1] = make_arrow_line(parent, size);
   return a;
+}
+
+// arrow pointing at `deg` (clockwise, 0 = right), centred in a size x size box
+static void arrow_points(lv_point_precise_t *out, int size, int deg) {
+  const float s = size, h = s / 2;
+  const float base[5][2] = {
+      {s * 0.10f, h}, {s * 0.90f, h},
+      {s * 0.55f, h - s * 0.35f}, {s * 0.90f, h}, {s * 0.55f, h + s * 0.35f}};
+  const float r = deg * 3.14159265f / 180.0f, c = cosf(r), sn = sinf(r);
+  for (int i = 0; i < 5; i++) {
+    const float x = base[i][0] - h, y = base[i][1] - h;
+    out[i].x = (lv_value_precise_t)(h + x * c - y * sn);
+    out[i].y = (lv_value_precise_t)(h + x * sn + y * c);
+  }
 }
 
 static void arrow_set(Arrow &a, Trend t, lv_color_t color) {
@@ -76,21 +112,21 @@ static void arrow_set(Arrow &a, Trend t, lv_color_t color) {
     case TREND_DOUBLE_DOWN: angle = 90;  dbl = true; break;
     default: show = false;
   }
-  lv_obj_t *ls[2] = {a.line1, a.line2};
   for (int i = 0; i < 2; i++) {
-    lv_obj_set_style_line_color(ls[i], color, 0);
-    lv_obj_set_style_transform_rotation(ls[i], angle * 10, 0);
+    arrow_points(a.pts[i], a.size, angle);
+    lv_line_set_points(a.line[i], a.pts[i], 5);
+    lv_obj_set_style_line_color(a.line[i], color, 0);
   }
-  if (!show) { lv_obj_add_flag(a.line1, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(a.line2, LV_OBJ_FLAG_HIDDEN); return; }
-  lv_obj_remove_flag(a.line1, LV_OBJ_FLAG_HIDDEN);
+  if (!show) { lv_obj_add_flag(a.line[0], LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(a.line[1], LV_OBJ_FLAG_HIDDEN); return; }
+  lv_obj_remove_flag(a.line[0], LV_OBJ_FLAG_HIDDEN);
   if (dbl) {
-    lv_obj_remove_flag(a.line2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(a.line[1], LV_OBJ_FLAG_HIDDEN);
     int off = a.size * 0.28f;  // stack two arrows vertically
-    lv_obj_align(a.line1, LV_ALIGN_CENTER, 0, -off);
-    lv_obj_align(a.line2, LV_ALIGN_CENTER, 0, off);
+    lv_obj_align(a.line[0], LV_ALIGN_CENTER, 0, -off);
+    lv_obj_align(a.line[1], LV_ALIGN_CENTER, 0, off);
   } else {
-    lv_obj_add_flag(a.line2, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(a.line1, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(a.line[1], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(a.line[0], LV_ALIGN_CENTER, 0, 0);
   }
 }
 
@@ -112,7 +148,7 @@ static const int WINDOWS[5] = {1, 3, 6, 12, 24};
 static int g_window_idx = 1;  // 3h default
 static int32_t g_data[24 * 12 + 1];
 
-static const int CHART_X = 70, CHART_Y = 92, CHART_W = 800 - CHART_X - 20, CHART_H = 300;
+static const int CHART_X = S(70), CHART_Y = S(92), CHART_W = UI_W - CHART_X - S(20), CHART_H = S(300);
 
 // ---------- helpers ----------
 static void fmt_age(char *out, size_t n, uint32_t age_s) {
@@ -143,17 +179,17 @@ static void on_window_btn(lv_event_t *e) {
 
 static lv_obj_t *make_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud, int w) {
   lv_obj_t *b = lv_button_create(parent);
-  lv_obj_set_size(b, w, 56);
+  lv_obj_set_size(b, w, S(56));
   lv_obj_set_style_bg_color(b, C_PANEL, 0);
   lv_obj_set_style_bg_color(b, C_ACCENT, LV_STATE_CHECKED);
   lv_obj_set_style_bg_color(b, lv_color_hex(0x2A3441), LV_STATE_PRESSED);
-  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_style_radius(b, S(10), 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_border_width(b, 0, 0);
   lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
   lv_obj_t *l = lv_label_create(b);
   lv_label_set_text(l, txt);
-  lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_font(l, FONT_24, 0);
   lv_obj_set_style_text_color(l, C_TEXT, 0);
   lv_obj_center(l);
   return b;
@@ -167,40 +203,40 @@ static void build_big() {
   lv_obj_add_event_cb(scr_big, goto_graph, LV_EVENT_CLICKED, nullptr);
 
   big_value = lv_label_create(scr_big);
-  lv_obj_set_style_text_font(big_value, &font_glucose_200, 0);
+  lv_obj_set_style_text_font(big_value, FONT_HUGE, 0);
   lv_obj_set_style_text_color(big_value, C_OK, 0);
   lv_label_set_text(big_value, "---");
-  lv_obj_align(big_value, LV_ALIGN_CENTER, -60, -30);
+  lv_obj_align(big_value, LV_ALIGN_CENTER, BIG_VALUE_X, BIG_VALUE_Y);
 
   big_arrow_box = lv_obj_create(scr_big);
   lv_obj_remove_style_all(big_arrow_box);
-  lv_obj_set_size(big_arrow_box, 120, 160);
-  lv_obj_align(big_arrow_box, LV_ALIGN_CENTER, 230, -30);
-  big_arrow = make_arrow(big_arrow_box, 100);
+  lv_obj_set_size(big_arrow_box, S(120), S(160));
+  lv_obj_align(big_arrow_box, LV_ALIGN_CENTER, BIG_ARROW_X, BIG_VALUE_Y);
+  big_arrow = make_arrow(big_arrow_box, S(100));
 
   big_unit = lv_label_create(scr_big);
-  lv_obj_set_style_text_font(big_unit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_font(big_unit, FONT_28, 0);
   lv_obj_set_style_text_color(big_unit, C_MUTED, 0);
   lv_label_set_text(big_unit, "mg/dL");
-  lv_obj_align(big_unit, LV_ALIGN_CENTER, 0, 105);
+  lv_obj_align(big_unit, LV_ALIGN_CENTER, 0, S(105));
 
   big_age = lv_label_create(scr_big);
-  lv_obj_set_style_text_font(big_age, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_font(big_age, FONT_28, 0);
   lv_obj_set_style_text_color(big_age, C_MUTED, 0);
   lv_label_set_text(big_age, "");
-  lv_obj_align(big_age, LV_ALIGN_CENTER, 0, 150);
+  lv_obj_align(big_age, LV_ALIGN_CENTER, 0, S(150));
 
   big_hint = lv_label_create(scr_big);
-  lv_obj_set_style_text_font(big_hint, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(big_hint, FONT_20, 0);
   lv_obj_set_style_text_color(big_hint, lv_color_hex(0x3D444D), 0);
   lv_label_set_text(big_hint, "tap for graph  " LV_SYMBOL_RIGHT);
-  lv_obj_align(big_hint, LV_ALIGN_BOTTOM_RIGHT, -20, -14);
+  lv_obj_align(big_hint, LV_ALIGN_BOTTOM_RIGHT, S(-20), S(-14));
 
   big_status = lv_label_create(scr_big);
-  lv_obj_set_style_text_font(big_status, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(big_status, FONT_20, 0);
   lv_obj_set_style_text_color(big_status, C_MUTED, 0);
   lv_label_set_text(big_status, "");
-  lv_obj_align(big_status, LV_ALIGN_BOTTOM_LEFT, 20, -14);
+  lv_obj_align(big_status, LV_ALIGN_BOTTOM_LEFT, S(20), S(-14));
 }
 
 static void build_graph() {
@@ -209,41 +245,41 @@ static void build_graph() {
 
   // ----- header -----
   g_value = lv_label_create(scr_graph);
-  lv_obj_set_style_text_font(g_value, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_font(g_value, FONT_VALUE, 0);
   lv_obj_set_style_text_color(g_value, C_OK, 0);
   lv_label_set_text(g_value, "---");
-  lv_obj_align(g_value, LV_ALIGN_TOP_LEFT, 24, 18);
+  lv_obj_align(g_value, LV_ALIGN_TOP_LEFT, S(24), S(18));
 
   g_arrow_box = lv_obj_create(scr_graph);
   lv_obj_remove_style_all(g_arrow_box);
-  lv_obj_set_size(g_arrow_box, 60, 60);
-  lv_obj_align(g_arrow_box, LV_ALIGN_TOP_LEFT, 130, 14);
-  g_arrow = make_arrow(g_arrow_box, 44);
+  lv_obj_set_size(g_arrow_box, S(60), S(60));
+  lv_obj_align(g_arrow_box, LV_ALIGN_TOP_LEFT, S(130), S(14));
+  g_arrow = make_arrow(g_arrow_box, S(44));
 
   lv_obj_t *unit = lv_label_create(scr_graph);
-  lv_obj_set_style_text_font(unit, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(unit, FONT_20, 0);
   lv_obj_set_style_text_color(unit, C_MUTED, 0);
   lv_label_set_text(unit, "mg/dL");
-  lv_obj_align(unit, LV_ALIGN_TOP_LEFT, 200, 20);
+  lv_obj_align(unit, LV_ALIGN_TOP_LEFT, S(200), S(20));
 
   g_age = lv_label_create(scr_graph);
-  lv_obj_set_style_text_font(g_age, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(g_age, FONT_20, 0);
   lv_obj_set_style_text_color(g_age, C_MUTED, 0);
   lv_label_set_text(g_age, "");
-  lv_obj_align(g_age, LV_ALIGN_TOP_LEFT, 200, 48);
+  lv_obj_align(g_age, LV_ALIGN_TOP_LEFT, S(200), S(48));
 
   g_stale = lv_label_create(scr_graph);
-  lv_obj_set_style_text_font(g_stale, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_font(g_stale, FONT_24, 0);
   lv_obj_set_style_text_color(g_stale, C_LOW, 0);
   lv_label_set_text(g_stale, LV_SYMBOL_WARNING "  NO RECENT DATA");
-  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, -24, 30);
+  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, S(-24), S(30));
   lv_obj_add_flag(g_stale, LV_OBJ_FLAG_HIDDEN);
 
   g_status = lv_label_create(scr_graph);
-  lv_obj_set_style_text_font(g_status, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_status, FONT_14, 0);
   lv_obj_set_style_text_color(g_status, C_MUTED, 0);
   lv_label_set_text(g_status, "");
-  lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, -24, 66);
+  lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, S(-24), S(66));
 
   // ----- chart -----
   g_chart = lv_chart_create(scr_graph);
@@ -259,7 +295,7 @@ static void build_graph() {
   lv_chart_set_range(g_chart, LV_CHART_AXIS_PRIMARY_Y, CHART_Y_MIN, CHART_Y_MAX);
   lv_chart_set_div_line_count(g_chart, 0, 0);
   lv_obj_set_style_size(g_chart, 0, 0, LV_PART_INDICATOR);           // no dots
-  lv_obj_set_style_line_width(g_chart, 4, LV_PART_ITEMS);
+  lv_obj_set_style_line_width(g_chart, S(4), LV_PART_ITEMS);
   lv_obj_set_style_line_rounded(g_chart, true, LV_PART_ITEMS);
   lv_obj_remove_flag(g_chart, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -280,41 +316,41 @@ static void build_graph() {
     lv_obj_set_style_bg_color(ln, v == GLUCOSE_HIGH ? C_HIGH : C_LOW, 0);
     lv_obj_set_style_bg_opa(ln, LV_OPA_50, 0);
     lv_obj_set_pos(ln, 0, chart_y_for(v));
-    lv_obj_set_size(ln, CHART_W, 2);
+    lv_obj_set_size(ln, CHART_W, S(2));
     lv_obj_move_background(ln);
   }
   const int ylabels[] = {300, 250, 200, 150, 100, 70, 40};
   for (int v : ylabels) {
     lv_obj_t *l = lv_label_create(scr_graph);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l, FONT_14, 0);
     lv_obj_set_style_text_color(l, (v == GLUCOSE_HIGH) ? C_HIGH : (v == GLUCOSE_LOW) ? C_LOW : C_MUTED, 0);
     lv_label_set_text_fmt(l, "%d", v);
-    lv_obj_set_width(l, CHART_X - 10);
+    lv_obj_set_width(l, CHART_X - S(10));
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(l, 0, CHART_Y + chart_y_for(v) - 8);
+    lv_obj_set_pos(l, 0, CHART_Y + chart_y_for(v) - S(8));
   }
   // x labels (start / mid / now)
   for (int i = 0; i < 3; i++) {
     g_xlabels[i] = lv_label_create(scr_graph);
-    lv_obj_set_style_text_font(g_xlabels[i], &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(g_xlabels[i], FONT_14, 0);
     lv_obj_set_style_text_color(g_xlabels[i], C_MUTED, 0);
   }
 
   g_series = lv_chart_add_series(g_chart, C_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
 
   // ----- bottom bar -----
-  make_btn(scr_graph, LV_SYMBOL_LEFT "  Back", goto_big, nullptr, 140);
-  lv_obj_align(lv_obj_get_child(scr_graph, -1), LV_ALIGN_BOTTOM_LEFT, 20, -14);
+  make_btn(scr_graph, LV_SYMBOL_LEFT "  Back", goto_big, nullptr, S(140));
+  lv_obj_align(lv_obj_get_child(scr_graph, -1), LV_ALIGN_BOTTOM_LEFT, S(20), S(-14));
 
   lv_obj_t *row = lv_obj_create(scr_graph);
   lv_obj_remove_style_all(row);
-  lv_obj_set_size(row, 5 * 88 + 4 * 10, 56);
-  lv_obj_align(row, LV_ALIGN_BOTTOM_RIGHT, -20, -14);
+  lv_obj_set_size(row, 5 * S(88) + 4 * S(10), S(56));
+  lv_obj_align(row, LV_ALIGN_BOTTOM_RIGHT, S(-20), S(-14));
   lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(row, 10, 0);
+  lv_obj_set_style_pad_column(row, S(10), 0);
   const char *names[5] = {"1h", "3h", "6h", "12h", "24h"};
   for (int i = 0; i < 5; i++) {
-    g_win_btns[i] = make_btn(row, names[i], on_window_btn, (void *)(intptr_t)i, 88);
+    g_win_btns[i] = make_btn(row, names[i], on_window_btn, (void *)(intptr_t)i, S(88));
     lv_obj_add_flag(g_win_btns[i], LV_OBJ_FLAG_CHECKABLE);
   }
   lv_obj_add_state(g_win_btns[g_window_idx], LV_STATE_CHECKED);
@@ -333,12 +369,12 @@ static void refresh_chart() {
   char b[16];
   snprintf(b, sizeof b, "-%dh", hours);
   lv_label_set_text(g_xlabels[0], b);
-  lv_obj_set_pos(g_xlabels[0], CHART_X, CHART_Y + CHART_H + 4);
+  lv_obj_set_pos(g_xlabels[0], CHART_X, CHART_Y + CHART_H + S(4));
   if (hours >= 2) snprintf(b, sizeof b, "-%dh", hours / 2); else snprintf(b, sizeof b, "-30m");
   lv_label_set_text(g_xlabels[1], b);
-  lv_obj_align_to(g_xlabels[1], g_chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+  lv_obj_align_to(g_xlabels[1], g_chart, LV_ALIGN_OUT_BOTTOM_MID, 0, S(4));
   lv_label_set_text(g_xlabels[2], "now");
-  lv_obj_align_to(g_xlabels[2], g_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
+  lv_obj_align_to(g_xlabels[2], g_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, S(4));
 }
 
 // only redraw when the text actually changes (every redraw costs a PSRAM framebuffer copy)

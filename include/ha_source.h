@@ -11,6 +11,8 @@
 #include <freertos/semphr.h>
 #include "glucose.h"
 #include "secrets.h"
+#include "wg_tunnel.h"
+#include "wifi_mgr.h"
 
 namespace ha {
 
@@ -170,28 +172,68 @@ static bool fetch_history(Batch &b) {
 }
 
 // ---------- background task ----------
+// Waits (servicing WiFi setup requests) for `cond`, polling every 250 ms
+#define WAIT_WHILE(cond) while (cond) { net::service(); vTaskDelay(pdMS_TO_TICKS(250)); }
+
+static void wifi_status_text() {
+  char ssid[33], reason[32], buf[48];
+  net::State st = net::get_state(ssid, sizeof ssid, reason, sizeof reason);
+  // ASCII-only font: each multi-byte UTF-8 char (e.g. ’ in iPhone hotspot names) becomes one '
+  char *w = ssid;
+  for (const char *r = ssid; *r; r++) {
+    unsigned char c = *r;
+    if (c < 0x80) *w++ = c;
+    else if (c >= 0xC0) *w++ = '\'';   // lead byte; continuation bytes (0x80-0xBF) are dropped
+  }
+  *w = 0;
+  switch (st) {
+    case net::NO_CONFIG:  set_status("WiFi not set up"); break;
+    case net::CONNECTING: snprintf(buf, sizeof buf, "WiFi: joining %s", ssid); set_status(buf); break;
+    case net::FAILED:     snprintf(buf, sizeof buf, "WiFi: %s", reason); set_status(buf); break;
+    default: break;
+  }
+}
+
 static void task(void *) {
-  WiFi.persistent(false);   // never write credentials/calibration to NVS: flash writes suspend the LCD feed ISR -> glitches
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // modem-sleep wakeups cause periodic RGB-panel glitches on the S3; keep the radio steady
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) vTaskDelay(pdMS_TO_TICKS(250));
-  Serial.printf("[ha] wifi ip=%s gw=%s dns=%s\n", WiFi.localIP().toString().c_str(),
-                WiFi.gatewayIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
+  net::begin();
+  while (!net::service()) { wifi_status_text(); vTaskDelay(pdMS_TO_TICKS(250)); }
   vTaskDelay(pdMS_TO_TICKS(1500));   // let DHCP/DNS settle before the first request
 
   set_status("");
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  while (time(nullptr) < 1700000000) vTaskDelay(pdMS_TO_TICKS(250));
+  WAIT_WHILE(time(nullptr) < 1700000000);
+
+  // optional WireGuard tunnel home (after NTP: handshakes are rejected if the clock is wrong)
+  if (wg::enabled) {
+    set_status("VPN connecting");
+    while (!wg::start()) {
+      set_status("VPN down");
+      uint32_t t0 = millis();
+      WAIT_WHILE(millis() - t0 < 10000);
+    }
+    set_status("");
+  }
 
   bool have_history = false;
-  uint32_t last_poll = 0, last_settings = 0;
+  uint32_t last_poll = 0, last_settings = 0, last_wg_check = 0;
+  bool offline = false;
   for (;;) {
-    if (WiFi.status() != WL_CONNECTED) {
-      set_status("wifi lost");
-      WiFi.reconnect();
-      vTaskDelay(pdMS_TO_TICKS(2000));
+    if (wg::enabled && millis() - last_wg_check >= 10000) {
+      last_wg_check = millis();
+      wg::maintain();
+    }
+    if (!net::service()) {
+      wifi_status_text();
+      offline = true;
+      vTaskDelay(pdMS_TO_TICKS(500));
       continue;
+    }
+    if (offline) {
+      // back online (possibly on a different network): restore tunnel routing before the next request
+      offline = false;
+      set_status("");
+      vTaskDelay(pdMS_TO_TICKS(1000));   // let DHCP/esp-netif finish (it resets route + DNS)
+      if (wg::enabled) { wg::maintain(); last_wg_check = millis(); }
     }
     if (!have_history) {
       set_status("");
@@ -209,8 +251,9 @@ static void task(void *) {
         fetch_settings();
         last_settings = millis();
       } else {
-        set_status("HA unreachable");
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        set_status(wg::up() ? "HA unreachable" : "VPN down");
+        uint32_t t0 = millis();
+        WAIT_WHILE(millis() - t0 < 10000);
       }
       continue;
     }
@@ -231,7 +274,7 @@ static void task(void *) {
         }
         xSemaphoreGive(mtx);
       } else {
-        set_status("HA unreachable");
+        set_status(wg::up() ? "HA unreachable" : "VPN down");
       }
     }
     if (millis() - last_settings >= SETTINGS_POLL_MS) {
@@ -246,6 +289,7 @@ static uint32_t clock_now() { return (uint32_t)time(nullptr); }
 
 static void begin() {
   mtx = xSemaphoreCreateMutex();
+  net::init();
   glucose::now_fn = clock_now;
   xTaskCreatePinnedToCore(task, "ha", 12288, nullptr, 1, nullptr, 0);
 }
