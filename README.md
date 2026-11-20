@@ -108,7 +108,8 @@ Same UI scaled 1.5x (`S()` in `ui.h`, 360px main digits), plus features for runn
 - If no network is configured, or the configured one can't be joined and the panel hasn't been online since boot, the **WiFi setup screen opens by itself** (~20 s).
 - Any time: tap the main screen → graph → **WiFi** button next to `Back`.
 - Pick from the scanned list (strongest first) or type a hidden network's name; on-screen keyboard; eye button shows the password.
-- Credentials are saved to NVS **only after they actually connect**, so a typo can't replace a working network. Saved credentials win over `WIFI_SSID`/`WIFI_PASS` from `secrets.h`, which are just the fallback (leave them `""` to always start in setup). Reflashing keeps the saved network; `esptool erase-flash` clears it.
+- **Saved networks**: up to 8 networks with passwords are kept in NVS, most recently used first. They're tagged `saved` in the list; tapping one pre-fills its password, so switching is just **Connect**. **Forget** removes the network in the name field.
+- Credentials are saved **only after they actually connect**, so a typo can't replace a working network. At boot the most recent saved network is joined; if the current network can't be reached, the strongest visible saved network is tried instead (unless you just picked that network yourself). `WIFI_SSID`/`WIFI_PASS` from `secrets.h` are just the fallback (leave them `""` to always start in setup). Reflashing keeps saved networks; `esptool erase-flash` clears them.
 - The built-in fonts are ASCII-only, so typographic quotes in SSIDs (iPhone hotspots use `’`) are shown as `'`; the exact name is still used to connect.
 
 ### WireGuard tunnel home
@@ -121,7 +122,11 @@ Same UI scaled 1.5x (`S()` in `ui.h`, 360px main digits), plus features for runn
 3. Keep `HA_BASE_URL` as the LAN address. A LAN-only hostname (e.g. `http://ha.home.lan:8123`) works when `WG_DNS` is set to the home DNS server (the `.conf`'s `DNS =`).
 4. The server must allow the panel's tunnel IP to reach HA on port 8123 (e.g. add it to the firewall alias/rule your other VPN clients use).
 
-How it runs: WiFi → NTP (handshakes fail with a wrong clock) → tunnel up → tunnel becomes the default route and `WG_DNS` the DNS server → HA polling as usual. WireGuard's own UDP stays bound to WiFi. After a WiFi reconnect or network change the route and DNS are re-applied (DHCP resets both); if the peer stays down 2 min the tunnel is rebuilt. Status corner shows `VPN connecting` / `VPN down` / `HA unreachable` / `WiFi: …`.
+How it runs: WiFi → NTP (handshakes fail with a wrong clock) → tunnel up → tunnel becomes the default route and `WG_DNS` the DNS server → HA polling as usual. WireGuard's own UDP stays bound to WiFi. Whenever WiFi comes back (reconnect or a different network) the tunnel is rebuilt with a fresh handshake, resolving the endpoint with the new network's DNS; the route and tunnel DNS are also re-checked every 10 s (DHCP resets both), and a peer that stays down 2 min is rebuilt.
+
+### Status
+
+Top-right on both screens: **WiFi**, **lock** (VPN, only when WireGuard is enabled) and **house** (Home Assistant) icons — green = OK, red = down. The house turns red when an HA request fails (timeout, bad token, HTTP error). The status text explains: `WiFi: …`, `VPN connecting` / `VPN down`, `HA unreachable`, or `Dexcom: no data` (HA answered but the Dexcom sensor is `unknown`/`unavailable` — Share or the phone isn't delivering readings). Icons are a 22 px Font Awesome subset (`src/font_status_icons.c`).
 
 Debugging: `PLATFORMIO_BUILD_FLAGS="-DWG_DEBUG -DLOG_LOCAL_LEVEL=4" pio run -e waveshare-p4-5 -t upload` prints the library's handshake log. `sending initiation packet` every 5 s with no `tunnel up` means the server isn't answering: check that the peer's public key on the server matches the panel's private key, and the firewall/port forward. Limitation: if the remote WiFi uses the same subnet as the home LAN, HA's address is treated as local and bypasses the tunnel.
 
@@ -175,6 +180,7 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 - `include/ui.h`      — big-number and graph screens, scaled by `S()` for the panel size
 - `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
 - `src/font_glucose_200.c` / `_360.c` / `_72.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header
+- `src/font_status_icons.c` — wifi / lock / home glyphs from LVGL's FontAwesome5 file (`lv_font_conv --size 22 -r 0xF1EB,0xF023,0xF015`)
 - `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example
 

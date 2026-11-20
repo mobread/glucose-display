@@ -112,25 +112,34 @@ static void fetch_settings() {
 }
 
 // ---------- HTTP ----------
+static volatile bool ha_ok = false;   // last HA request succeeded (status icon)
 static int http_get(const String &path, String &body) {
   HTTPClient http;
   http.setTimeout(10000);
   http.begin(String(HA_BASE_URL) + path);
   http.addHeader("Authorization", String("Bearer ") + HA_TOKEN);
   int code = http.GET();
+  ha_ok = code == 200;   // anything else (timeout, 401, 5xx) shows the HA icon red
   if (code == 200) body = http.getString();
   http.end();
   return code;
 }
 
+static bool sensor_unavailable = false;   // last fetch reached HA but the Dexcom sensor had no value
+
 static bool fetch_current(Reading &out, Trend &trend) {
+  sensor_unavailable = false;
   String body;
   int code = http_get(String("/api/states/") + HA_ENTITY_VALUE, body);
   if (code != 200) { Serial.printf("[ha] states value HTTP %d\n", code); return false; }
   JsonDocument doc;
   if (deserializeJson(doc, body)) return false;
   const char *state = doc["state"];
-  if (!valid_state(state)) { Serial.println("[ha] glucose value unavailable"); return false; }
+  if (!valid_state(state)) {
+    Serial.printf("[ha] glucose value %s\n", state ? state : "missing");
+    sensor_unavailable = true;   // HA is fine; Dexcom Share / the phone isn't delivering readings
+    return false;
+  }
   out.value = atoi(state);
   out.ts = parse_iso8601(doc["last_changed"]);
 
@@ -233,7 +242,12 @@ static void task(void *) {
       offline = false;
       set_status("");
       vTaskDelay(pdMS_TO_TICKS(1000));   // let DHCP/esp-netif finish (it resets route + DNS)
-      if (wg::enabled) { wg::maintain(); last_wg_check = millis(); }
+      if (wg::enabled) {
+        set_status("VPN connecting");
+        wg::on_network_change();
+        last_wg_check = millis();
+        set_status(wg::up() ? "" : "VPN down");
+      }
     }
     if (!have_history) {
       set_status("");
@@ -274,7 +288,7 @@ static void task(void *) {
         }
         xSemaphoreGive(mtx);
       } else {
-        set_status(wg::up() ? "HA unreachable" : "VPN down");
+        set_status(sensor_unavailable ? "Dexcom: no data" : wg::up() ? "HA unreachable" : "VPN down");
       }
     }
     if (millis() - last_settings >= SETTINGS_POLL_MS) {

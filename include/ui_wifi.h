@@ -20,6 +20,7 @@ static bool waiting_for_connect = false;   // user pressed Connect; return to ma
 static uint32_t connected_at = 0;
 static lv_obj_t *prev_screen = nullptr;
 static char picked_ssid[33] = "";   // exact bytes of the network tapped in the list
+static int nets_count = 0;
 
 // The built-in Montserrat fonts are ASCII-only: show typographic quotes (iPhone hotspot names
 // use ’) as plain ASCII and anything else non-ASCII as '?'. Only for display -- connecting
@@ -59,18 +60,33 @@ static void on_ta_event(lv_event_t *e) {
   if (lv_event_get_code(e) == LV_EVENT_CLICKED || lv_event_get_code(e) == LV_EVENT_FOCUSED) kb_show_for(ta);
 }
 
-static void connect_now() {
-  const char *ssid = lv_textarea_get_text(ta_ssid);
-  // the field shows a display-safe copy of the picked network; connect with its exact name
+// the SSID field shows a display-safe copy of the picked network; map it back to the exact bytes
+static const char *field_ssid() {
+  const char *t = lv_textarea_get_text(ta_ssid);
   char shown[33];
   display_text(shown, sizeof shown, picked_ssid);
-  if (picked_ssid[0] && !strcmp(ssid, shown)) ssid = picked_ssid;
+  return (picked_ssid[0] && !strcmp(t, shown)) ? picked_ssid : t;
+}
+
+// fill the password field from the saved list (masked); returns true if the network is saved
+static bool prefill_password(const char *ssid) {
+  char pw[65] = "";
+  bool saved = net::known_password(ssid, pw, sizeof pw);
+  lv_textarea_set_password_mode(ta_pass, true);
+  lv_textarea_set_text(ta_pass, pw);
+  return saved;
+}
+
+static void connect_now() {
+  const char *ssid = field_ssid();
+  char shown[33];
   if (!ssid[0]) { lv_label_set_text(status, "Pick a network or type its name"); return; }
   kb_hide();
   net::request_connect(ssid, lv_textarea_get_text(ta_pass));
   waiting_for_connect = true;
   connected_at = 0;
   display_text(shown, sizeof shown, ssid);
+  lv_obj_set_style_text_color(status, ui::C_MUTED, 0);
   lv_label_set_text_fmt(status, "Connecting to %s ...", shown);
 }
 
@@ -90,12 +106,19 @@ static void on_network_click(lv_event_t *e) {
   display_text(shown, sizeof shown, n->ssid);
   strlcpy(picked_ssid, n->ssid, sizeof picked_ssid);
   lv_textarea_set_text(ta_ssid, shown);
-  lv_textarea_set_text(ta_pass, "");
-  if (n->secure) kb_show_for(ta_pass);
-  else kb_hide();
+  if (prefill_password(n->ssid)) {
+    kb_hide();
+    lv_obj_set_style_text_color(status, ui::C_MUTED, 0);
+    lv_label_set_text(status, "Saved network - press Connect");
+  } else if (n->secure) {
+    kb_show_for(ta_pass);
+  } else {
+    kb_hide();
+  }
 }
 
 static void rebuild_list(int count) {
+  nets_count = count;
   lv_obj_clean(list);
   if (count == 0) {
     lv_obj_t *l = lv_label_create(list);
@@ -115,12 +138,14 @@ static void rebuild_list(int count) {
     lv_obj_set_style_pad_ver(b, 18, 0);
     lv_obj_set_style_border_color(b, ui::C_BG, 0);
     lv_obj_add_event_cb(b, on_network_click, LV_EVENT_CLICKED, &nets[i]);
-    // signal quality on the right; "open" marks networks without a password
+    // signal quality on the right; "saved" / "open" tags
+    char pw[2];
+    bool saved = net::known_password(nets[i].ssid, pw, sizeof pw);
     int q = constrain(2 * (nets[i].rssi + 100), 0, 100);
     lv_obj_t *r = lv_label_create(b);
-    lv_label_set_text_fmt(r, "%s%d%%", nets[i].secure ? "" : "open  ", q);
+    lv_label_set_text_fmt(r, "%s%s%d%%", saved ? "saved  " : "", nets[i].secure ? "" : "open  ", q);
     lv_obj_set_style_text_font(r, FONT_20, 0);
-    lv_obj_set_style_text_color(r, ui::C_MUTED, 0);
+    lv_obj_set_style_text_color(r, saved ? ui::C_ACCENT : ui::C_MUTED, 0);
   }
 }
 
@@ -147,7 +172,9 @@ static void open_screen() {
   strlcpy(picked_ssid, ssid, sizeof picked_ssid);
   display_text(shown, sizeof shown, ssid);
   lv_textarea_set_text(ta_ssid, shown);
-  lv_textarea_set_text(ta_pass, "");
+  prefill_password(ssid);
+  lv_obj_set_style_text_color(status, ui::C_MUTED, 0);
+  lv_label_set_text(status, "");
   kb_hide();
   rescan();
   lv_screen_load(scr);
@@ -211,11 +238,27 @@ static void build() {
   lv_obj_set_height(btn_show, lv_obj_get_height(ta_pass));
   lv_obj_set_pos(btn_show, RIGHT_X + RIGHT_W - 124, TOP + 154);
 
-  lv_obj_t *bc = ui::make_btn(scr, "Connect", [](lv_event_t *) { connect_now(); }, nullptr, (RIGHT_W - 16) / 2);
+  const int BW = (RIGHT_W - 32) / 3;
+  lv_obj_t *bc = ui::make_btn(scr, "Connect", [](lv_event_t *) { connect_now(); }, nullptr, BW);
   lv_obj_set_style_bg_color(bc, ui::C_ACCENT, 0);
   lv_obj_set_pos(bc, RIGHT_X, TOP + 240);
-  lv_obj_t *bb = ui::make_btn(scr, LV_SYMBOL_LEFT "  Back", [](lv_event_t *) { close_screen(); }, nullptr, (RIGHT_W - 16) / 2);
-  lv_obj_set_pos(bb, RIGHT_X + (RIGHT_W - 16) / 2 + 16, TOP + 240);
+  lv_obj_t *bf = ui::make_btn(scr, LV_SYMBOL_TRASH "  Forget", [](lv_event_t *) {
+    const char *ssid = field_ssid();
+    char shown[33];
+    display_text(shown, sizeof shown, ssid);
+    kb_hide();
+    if (ssid[0] && net::forget(ssid)) {
+      lv_textarea_set_text(ta_pass, "");
+      lv_obj_set_style_text_color(status, ui::C_MUTED, 0);
+      lv_label_set_text_fmt(status, "Forgot %s", shown);
+      rebuild_list(nets_count);   // drop its "saved" tag
+    } else {
+      lv_label_set_text_fmt(status, "%s isn't saved", ssid[0] ? shown : "That network");
+    }
+  }, nullptr, BW);
+  lv_obj_set_pos(bf, RIGHT_X + BW + 16, TOP + 240);
+  lv_obj_t *bb = ui::make_btn(scr, LV_SYMBOL_LEFT "  Back", [](lv_event_t *) { close_screen(); }, nullptr, BW);
+  lv_obj_set_pos(bb, RIGHT_X + 2 * (BW + 16), TOP + 240);
 
   status = make_label("", RIGHT_X, TOP + 340, FONT_24, ui::C_MUTED);
   lv_obj_set_width(status, RIGHT_W);

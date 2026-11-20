@@ -53,6 +53,8 @@ void loop() {
     char s[48];
     ha::get_status(s, sizeof s);
     ui::set_status(s);
+    bool wifi = net::get_state() == net::CONNECTED;
+    ui::set_indicators(wifi, wg::enabled ? (wifi && wg::last_up) : -1, wifi && ha::ha_ok);
   }
 #else
   if (glucose::dummy::poll()) {

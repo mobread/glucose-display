@@ -1,8 +1,10 @@
 // WiFi connection manager with runtime-configurable credentials (Waveshare P4 build).
 //
-// Credentials come from NVS (set on-device via the WiFi setup screen) and fall back to
-// WIFI_SSID / WIFI_PASS from secrets.h. New credentials are only saved once they actually
-// connect, so a typo can't replace a working network.
+// Remembers up to MAX_KNOWN networks (SSID + password) in NVS, most recently used first; new ones
+// are only saved once they actually connect, so a typo can't replace a working network.
+// WIFI_SSID / WIFI_PASS from secrets.h are the fallback when nothing is saved.
+// Boot joins the most recent saved network; if the current network can't be joined (and the user
+// didn't just pick it), the strongest visible saved network is tried instead.
 //
 // All WiFi calls happen on the HA task (net::service()); the UI talks to it through
 // request_scan() / request_connect() and reads state/scan results back, all under a mutex.
@@ -46,9 +48,15 @@ static int network_count = 0;
 static uint32_t scan_generation = 0;
 static bool scanning = false;
 
+// saved networks (shared: UI reads passwords for prefill, task adds on connect)
+struct Known { char ssid[33]; char pass[65]; };
+static const int MAX_KNOWN = 8;
+static Known known[MAX_KNOWN];
+static int known_count = 0;
+
 // task-private
 static uint32_t attempt_start = 0;
-static bool save_on_connect = false;
+static bool save_on_connect = false;   // user picked this network: remember it once it connects
 
 struct Lock {
   Lock() { xSemaphoreTake(mtx, portMAX_DELAY); }
@@ -88,6 +96,76 @@ static int get_networks(Network *out, uint32_t &gen) {
   return network_count;
 }
 
+// ---------- saved networks ----------
+static void store_known() {   // caller holds the lock
+  Preferences p;
+  p.begin("wifi", false);
+  p.putUChar("n", known_count);
+  char k[4];
+  for (int i = 0; i < known_count; i++) {
+    snprintf(k, sizeof k, "s%d", i); p.putString(k, known[i].ssid);
+    snprintf(k, sizeof k, "p%d", i); p.putString(k, known[i].pass);
+  }
+  p.end();
+}
+
+static void load_known() {
+  Preferences p;
+  p.begin("wifi", true);
+  known_count = min((int)p.getUChar("n", 0), MAX_KNOWN);
+  char k[4];
+  for (int i = 0; i < known_count; i++) {
+    snprintf(k, sizeof k, "s%d", i); strlcpy(known[i].ssid, p.getString(k, "").c_str(), sizeof known[i].ssid);
+    snprintf(k, sizeof k, "p%d", i); strlcpy(known[i].pass, p.getString(k, "").c_str(), sizeof known[i].pass);
+  }
+  String legacy = known_count ? String() : p.getString("ssid", "");   // single-network format from before
+  String legacy_pass = legacy.length() ? p.getString("pass", "") : String();
+  p.end();
+  if (legacy.length()) {
+    strlcpy(known[0].ssid, legacy.c_str(), sizeof known[0].ssid);
+    strlcpy(known[0].pass, legacy_pass.c_str(), sizeof known[0].pass);
+    known_count = 1;
+    store_known();
+  }
+}
+
+static int find_known(const char *ssid) {   // caller holds the lock
+  for (int i = 0; i < known_count; i++) if (!strcmp(known[i].ssid, ssid)) return i;
+  return -1;
+}
+static int find_known_locked(const char *ssid) { Lock l; return find_known(ssid); }
+
+// move/insert at the front (most recent); persists only when something changed
+static void remember(const char *ssid, const char *pass) {
+  Lock l;
+  int i = find_known(ssid);
+  if (i == 0 && !strcmp(known[0].pass, pass)) return;
+  if (i < 0) i = known_count < MAX_KNOWN ? known_count++ : MAX_KNOWN - 1;   // full: drop the oldest
+  for (; i > 0; i--) known[i] = known[i - 1];
+  strlcpy(known[0].ssid, ssid, sizeof known[0].ssid);
+  strlcpy(known[0].pass, pass, sizeof known[0].pass);
+  store_known();
+}
+
+// UI side
+static bool known_password(const char *ssid, char *out, size_t n) {
+  Lock l;
+  int i = find_known(ssid);
+  if (i < 0) return false;
+  strlcpy(out, known[i].pass, n);
+  return true;
+}
+
+static bool forget(const char *ssid) {
+  Lock l;
+  int i = find_known(ssid);
+  if (i < 0) return false;
+  for (; i < known_count - 1; i++) known[i] = known[i + 1];
+  known_count--;
+  store_known();
+  return true;
+}
+
 // ---------- task side ----------
 static void set_state(State s, const char *reason = "") {
   Lock l;
@@ -105,7 +183,7 @@ static void start_connect() {
   set_state(CONNECTING);
 }
 
-static void do_scan() {
+static int do_scan(bool reconnect = true) {
   // scanning can't run while a connect attempt is in flight; a connected STA can scan fine
   bool was_connected = WiFi.status() == WL_CONNECTED;
   if (!was_connected) { WiFi.disconnect(); vTaskDelay(pdMS_TO_TICKS(200)); }
@@ -137,11 +215,45 @@ static void do_scan() {
     scanning = false;
   }
   Serial.printf("[wifi] scan: %d networks\n", count);
-  if (!was_connected && cur_ssid[0]) start_connect();
+  if (reconnect && !was_connected && cur_ssid[0]) start_connect();
+  return count;
+}
+
+// Current network unreachable: switch to the strongest visible saved network (or the built-in
+// fallback). Returns true if it picked a different network than the current one.
+static bool pick_best_known() {
+  do_scan(false);
+  Known best = {};
+  int best_rssi = -1000;
+  {
+    Lock l;
+    for (int i = 0; i < network_count; i++) {
+      int k = find_known(networks[i].ssid);
+      const char *pass = k >= 0 ? known[k].pass
+                       : (strlen(WIFI_SSID) && !strcmp(networks[i].ssid, WIFI_SSID)) ? WIFI_PASS : nullptr;
+      if (pass && networks[i].rssi > best_rssi) {
+        best_rssi = networks[i].rssi;
+        strlcpy(best.ssid, networks[i].ssid, sizeof best.ssid);
+        strlcpy(best.pass, pass, sizeof best.pass);
+      }
+    }
+  }
+  if (!best.ssid[0] || !strcmp(best.ssid, cur_ssid)) return false;
+  Serial.printf("[wifi] '%s' unreachable; switching to saved network '%s'\n", cur_ssid, best.ssid);
+  {
+    Lock l;
+    strlcpy(cur_ssid, best.ssid, sizeof cur_ssid);
+    strlcpy(cur_pass, best.pass, sizeof cur_pass);
+  }
+  return true;
 }
 
 // call once before the UI or the task touch anything here
-static void init() { if (!mtx) mtx = xSemaphoreCreateMutex(); }
+static void init() {
+  if (mtx) return;
+  mtx = xSemaphoreCreateMutex();
+  load_known();
+}
 
 static void begin() {
   WiFi.persistent(false);   // we keep credentials in our own NVS namespace
@@ -149,14 +261,10 @@ static void begin() {
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
 
-  Preferences p;
-  p.begin("wifi", true);
-  String s = p.getString("ssid", ""), pw = p.getString("pass", "");
-  p.end();
-  if (s.length()) {
-    strlcpy(cur_ssid, s.c_str(), sizeof cur_ssid);
-    strlcpy(cur_pass, pw.c_str(), sizeof cur_pass);
-    Serial.printf("[wifi] using saved network '%s'\n", cur_ssid);
+  if (known_count) {
+    strlcpy(cur_ssid, known[0].ssid, sizeof cur_ssid);
+    strlcpy(cur_pass, known[0].pass, sizeof cur_pass);
+    Serial.printf("[wifi] using saved network '%s' (%d saved)\n", cur_ssid, known_count);
   } else if (strlen(WIFI_SSID)) {
     strlcpy(cur_ssid, WIFI_SSID, sizeof cur_ssid);
     strlcpy(cur_pass, WIFI_PASS, sizeof cur_pass);
@@ -193,12 +301,10 @@ static bool service() {
     }
     if (save_on_connect) {
       save_on_connect = false;
-      Preferences p;
-      p.begin("wifi", false);
-      p.putString("ssid", cur_ssid);
-      p.putString("pass", cur_pass);
-      p.end();
+      remember(cur_ssid, cur_pass);
       Serial.printf("[wifi] saved '%s'\n", cur_ssid);
+    } else if (find_known_locked(cur_ssid) > 0) {
+      remember(cur_ssid, cur_pass);   // auto-joined a saved network: make it the most recent
     }
     return true;
   }
@@ -210,9 +316,13 @@ static bool service() {
                     : "couldn't connect";
     if (state != FAILED) Serial.printf("[wifi] '%s': %s (status %d)\n", cur_ssid, why, (int)st);
     set_state(FAILED, why);
-    // retry, but keep the FAILED state (and reason) visible until it actually connects
+    // A network the user just picked keeps being retried (they see the error on the setup screen).
+    // Otherwise fall over to the strongest visible saved network, else retry the same one.
+    // Either way keep the FAILED state (and reason) visible until something actually connects.
+    if (!save_on_connect) pick_best_known();
     WiFi.disconnect();
     vTaskDelay(pdMS_TO_TICKS(100));
+    Serial.printf("[wifi] retrying '%s'\n", cur_ssid);
     WiFi.begin(cur_ssid, cur_pass);
     attempt_start = millis();
   }

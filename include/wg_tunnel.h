@@ -17,7 +17,9 @@ namespace wg {
 static constexpr bool enabled = false;
 static bool start() { return true; }
 static bool up() { return true; }
+static volatile bool last_up = false;
 static void maintain() {}
+static void on_network_change() {}
 }  // namespace wg
 #else
 
@@ -60,7 +62,7 @@ struct Call {
   int op;
   esp_err_t result;
 };
-enum { OP_INIT, OP_CONNECT, OP_ALLOW_ALL, OP_SET_DEFAULT, OP_IS_UP, OP_DISCONNECT, OP_DNS_TUNNEL, OP_DNS_LOCAL };
+enum { OP_INIT, OP_CONNECT, OP_ALLOW_ALL, OP_SET_DEFAULT, OP_IS_UP, OP_DISCONNECT, OP_DNS_TUNNEL, OP_DNS_LOCAL, OP_DNS_CAPTURE };
 
 static err_t on_tcpip(struct tcpip_api_call_data *d) {
   Call *c = (Call *)d;
@@ -90,6 +92,13 @@ static err_t on_tcpip(struct tcpip_api_call_data *d) {
       }
       break;
     }
+    case OP_DNS_CAPTURE: {
+      // remember the DNS server DHCP just handed out on the (new) local network
+      const ip_addr_t *cur = dns_getserver(0);
+      if (!ip_addr_isany(cur) && !ip_addr_cmp(cur, &tunnel_dns)) local_dns = *cur;
+      c->result = ESP_OK;
+      break;
+    }
     case OP_DNS_LOCAL:
       if (!ip_addr_isany(&local_dns)) dns_setserver(0, &local_dns);
       c->result = ESP_OK;
@@ -106,7 +115,8 @@ static esp_err_t call(int op) {
   return c.result;
 }
 
-static bool up() { return connected && call(OP_IS_UP) == ESP_OK; }
+static volatile bool last_up = false;   // last result of up()/start(), for the status icons (any thread)
+static bool up() { last_up = connected && call(OP_IS_UP) == ESP_OK; return last_up; }
 
 // Bring the tunnel up. Blocks up to ~30 s waiting for the first handshake. Returns true when up.
 static bool start() {
@@ -149,6 +159,7 @@ static bool start() {
   for (int i = 0; i < 60; i++) {
     if (call(OP_IS_UP) == ESP_OK) {
       Serial.println("[wg] tunnel up");
+      last_up = true;
       if (use_tunnel_dns) { call(OP_DNS_TUNNEL); Serial.printf("[wg] dns -> %s\n", WG_DNS); }
       down_since = 0;
       return true;
@@ -156,6 +167,7 @@ static bool start() {
     vTaskDelay(pdMS_TO_TICKS(500));
   }
   Serial.printf("[wg] no handshake yet (endpoint resolved to %s)\n", ipaddr_ntoa(&cfg.endpoint_ip));
+  last_up = false;
   return false;
 }
 
@@ -180,6 +192,16 @@ static void maintain() {
   }
   if (!down_since) { down_since = millis(); return; }
   if (millis() - down_since > 120000) { down_since = 0; restart(); }
+}
+
+// WiFi came back, possibly on a different network (new public IP, NAT, DNS). Rather than hope the
+// server notices the old session roaming, rebuild the tunnel: fresh handshake from the new address,
+// endpoint resolved with the new network's DNS. Takes about a second when the server is reachable.
+static void on_network_change() {
+  if (!initialized) return;          // first connect: start() runs after NTP
+  call(OP_DNS_CAPTURE);
+  down_since = 0;
+  restart();
 }
 
 }  // namespace wg

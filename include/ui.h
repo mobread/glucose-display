@@ -39,6 +39,8 @@ LV_FONT_DECLARE(font_glucose_200);
 #define FONT_28    (&lv_font_montserrat_28)
 #endif
 
+LV_FONT_DECLARE(font_status_icons);   // Font Awesome wifi / lock / home, 22 px
+
 namespace ui {
 
 // ---------- palette ----------
@@ -128,6 +130,34 @@ static void arrow_set(Arrow &a, Trend t, lv_color_t color) {
     lv_obj_add_flag(a.line[1], LV_OBJ_FLAG_HIDDEN);
     lv_obj_align(a.line[0], LV_ALIGN_CENTER, 0, 0);
   }
+}
+
+// ---------- status icons (top-right): WiFi, VPN, Home Assistant ----------
+#define ICON_WIFI "\xEF\x87\xAB"   // U+F1EB
+#define ICON_LOCK "\xEF\x80\xA3"   // U+F023
+#define ICON_HOME "\xEF\x80\x95"   // U+F015
+struct Indicators { lv_obj_t *row, *wifi, *vpn, *ha; };
+static Indicators ind_big, ind_graph;
+
+static Indicators make_indicators(lv_obj_t *parent) {
+  Indicators in;
+  in.row = lv_obj_create(parent);
+  lv_obj_remove_style_all(in.row);
+  lv_obj_set_size(in.row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(in.row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(in.row, S(10), 0);
+  lv_obj_align(in.row, LV_ALIGN_TOP_RIGHT, S(-16), S(10));
+  lv_obj_remove_flag(in.row, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(in.row, LV_OBJ_FLAG_HIDDEN);   // shown once there is state to report
+  lv_obj_t **icons[3] = {&in.wifi, &in.vpn, &in.ha};
+  const char *glyphs[3] = {ICON_WIFI, ICON_LOCK, ICON_HOME};
+  for (int i = 0; i < 3; i++) {
+    *icons[i] = lv_label_create(in.row);
+    lv_label_set_text(*icons[i], glyphs[i]);
+    lv_obj_set_style_text_font(*icons[i], &font_status_icons, 0);
+    lv_obj_set_style_text_color(*icons[i], C_STALE, 0);
+  }
+  return in;
 }
 
 // ---------- state ----------
@@ -237,6 +267,8 @@ static void build_big() {
   lv_obj_set_style_text_color(big_status, C_MUTED, 0);
   lv_label_set_text(big_status, "");
   lv_obj_align(big_status, LV_ALIGN_BOTTOM_LEFT, S(20), S(-14));
+
+  ind_big = make_indicators(scr_big);
 }
 
 static void build_graph() {
@@ -272,14 +304,14 @@ static void build_graph() {
   lv_obj_set_style_text_font(g_stale, FONT_24, 0);
   lv_obj_set_style_text_color(g_stale, C_LOW, 0);
   lv_label_set_text(g_stale, LV_SYMBOL_WARNING "  NO RECENT DATA");
-  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, S(-24), S(30));
+  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, S(-24), S(38));
   lv_obj_add_flag(g_stale, LV_OBJ_FLAG_HIDDEN);
 
   g_status = lv_label_create(scr_graph);
   lv_obj_set_style_text_font(g_status, FONT_14, 0);
   lv_obj_set_style_text_color(g_status, C_MUTED, 0);
   lv_label_set_text(g_status, "");
-  lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, S(-24), S(66));
+  lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, S(-24), S(72));
 
   // ----- chart -----
   g_chart = lv_chart_create(scr_graph);
@@ -354,6 +386,8 @@ static void build_graph() {
     lv_obj_add_flag(g_win_btns[i], LV_OBJ_FLAG_CHECKABLE);
   }
   lv_obj_add_state(g_win_btns[g_window_idx], LV_STATE_CHECKED);
+
+  ind_graph = make_indicators(scr_graph);
 }
 
 // ---------- refresh ----------
@@ -440,6 +474,18 @@ static void on_new_reading() {
   refresh_values();
   refresh_trend();
   refresh_chart();
+}
+
+// status icons: green = ok, red = down; vpn < 0 hides the VPN icon (tunnel not used)
+static void set_indicators(bool wifi, int vpn, bool ha) {
+  Indicators *all[2] = {&ind_big, &ind_graph};
+  for (Indicators *in : all) {
+    lv_obj_remove_flag(in->row, LV_OBJ_FLAG_HIDDEN);
+    set_color_if_changed(in->wifi, wifi ? C_OK : C_LOW);
+    set_color_if_changed(in->ha, ha ? C_OK : C_LOW);
+    if (vpn < 0) lv_obj_add_flag(in->vpn, LV_OBJ_FLAG_HIDDEN);
+    else { lv_obj_remove_flag(in->vpn, LV_OBJ_FLAG_HIDDEN); set_color_if_changed(in->vpn, vpn ? C_OK : C_LOW); }
+  }
 }
 
 // connection / source status shown in the corner ("" = hide)
