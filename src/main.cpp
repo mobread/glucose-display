@@ -34,6 +34,15 @@ void setup() {
 }
 
 void loop() {
+#if defined(BOARD_TDISPLAY_S3)
+  // no touch: bottom button (BOOT) flips screens, top button (KEY) cycles the graph window
+  uint8_t btn = board::poll_buttons();
+  if (btn & board::BTN_BOOT) ui::toggle_screen();
+  if (btn & board::BTN_KEY) {
+    if (lv_screen_active() != ui::scr_graph) ui::toggle_screen();
+    else ui::next_window();
+  }
+#endif
 #if USE_HA
   static uint32_t last_status = 0;
   if (pending_brightness >= 0) {

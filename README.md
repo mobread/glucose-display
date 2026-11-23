@@ -1,4 +1,4 @@
-# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5")
+# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5" / LilyGo T-Display-S3)
 
 LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant. Two boards:
 
@@ -6,6 +6,7 @@ LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant.
 |---|---|---|
 | Elecrow CrowPanel Advance 7.0" (ESP32-S3-WROOM-1-N16R8, 800x480 RGB, GT911) | `crowpanel-advance-7`, `dummy` | home LAN only |
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-5 (ESP32-P4 rev3, 720x1280 MIPI-DSI HX8394, GT911, ESP32-C6 WiFi) | `waveshare-p4-5`, `waveshare-p4-5-dummy` | runs landscape 1280x720; on-device WiFi setup; optional WireGuard tunnel home — [details](#waveshare-esp32-p4-wifi6-touch-lcd-5) |
+| LilyGo T-Display-S3 (ESP32-S3R8, 1.9" 170x320 ST7789, 8-bit parallel, no touch) | `tdisplay-s3`, `tdisplay-s3-dummy` | runs landscape 320x170 with its own compact layout; side buttons instead of touch; home LAN only — [details](#lilygo-t-display-s3) |
 
 - **Big screen**: current mg/dL in 200px digits, trend arrow, age of reading. Tap anywhere -> graph.
 - **Graph screen**: 1h / 3h / 6h / 12h / 24h history, target band 70-200 shaded, threshold lines, `Back` button.
@@ -139,6 +140,31 @@ pio device monitor -p /dev/cu.usbmodem* -b 115200
 
 Long flash reads/writes through a USB hub can fail with "serial noise or corruption"; 460800 baud is reliable, or read in 1 MB chunks. Restore the factory image with `esptool --port <port> --baud 460800 write-flash 0 <backup>.bin` (factory partitions span the first 16 MB).
 
+## LilyGo T-Display-S3
+
+A pocket-size version: 1.9" ST7789 (170x320, run as 320x170 landscape) on the ESP32-S3's 8-bit parallel LCD bus, driven by LovyanGFX (`include/board_tdisplay_s3.h`). The 800x480 layout doesn't scale down to 170 px tall, so `ui.h` has a compact layout for panels under 240 px tall (`UI_COMPACT`):
+
+- **Big screen**: 112 px digits (`src/font_glucose_112.c`) with the trend arrow beside them, `mg/dL` bottom-left, the reading's age bottom-right, the status text top-left and the WiFi/HA icons top-right.
+- **Graph screen**: the value, arrow and age in a header row, the current window (`3h`) top-right, and a chart with the 70–200 band underneath.
+
+**Buttons** (USB-C facing right):
+
+| Button | Big screen | Graph screen |
+|---|---|---|
+| Bottom (BOOT, GPIO0) | open graph | back to big screen |
+| Top (KEY, GPIO14) | open graph | next window: 1h → 3h → 6h → 12h → 24h |
+
+**Network**: no WireGuard on this build, so it must join the same LAN as Home Assistant (plain HTTP, same rules as the CrowPanel). Because it shares `secrets.h` with the P4, it has its own WiFi override there under `#if defined(BOARD_TDISPLAY_S3)`; leave the main `WIFI_SSID` for the P4.
+
+**Build / flash (macOS)**: plug in USB-C; it shows up as `/dev/cu.usbmodem*` and flashes without pressing any buttons.
+
+```sh
+pio run -e tdisplay-s3 -t upload           # or -e tdisplay-s3-dummy for simulated data
+pio device monitor -e tdisplay-s3
+```
+
+To go back to the MicroPython apps in `../esp-lcd`, run its `flash.sh` and then `deploy.sh <app>`.
+
 ## Display stability (CrowPanel, hard-won)
 
 The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes for that bus and shows up as flicker/artifacts. What works:
@@ -171,6 +197,7 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 ## Layout
 
 - `include/board.h`   — picks the board header (`BOARD_WAVESHARE_P4_5` or CrowPanel)
+- `include/board_tdisplay_s3.h` — LilyGo T-Display-S3: ST7789 over `Bus_Parallel8` (LovyanGFX), LVGL partial render, PWM backlight, debounced side buttons
 - `include/board_crowpanel.h` — display (esp_lcd RGB, single PSRAM framebuffer + LVGL partial render), GT911 touch, backlight (V1.0 TCA9534 or V1.2+ ctrl MCU @0x30)
 - `include/board_waveshare_p4_5.h` — MIPI-DSI HX8394 panel, rotated flush, GT911 touch with reset, LEDC backlight
 - `include/glucose.h` — ring buffer, thresholds, trend calc, windowing, dummy source
@@ -179,7 +206,7 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 - `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare build)
 - `include/ui.h`      — big-number and graph screens, scaled by `S()` for the panel size
 - `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
-- `src/font_glucose_200.c` / `_360.c` / `_72.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header
+- `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main
 - `src/font_status_icons.c` — wifi / lock / home glyphs from LVGL's FontAwesome5 file (`lv_font_conv --size 22 -r 0xF1EB,0xF023,0xF015`)
 - `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example

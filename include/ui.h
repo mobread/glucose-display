@@ -25,6 +25,17 @@ LV_FONT_DECLARE(font_glucose_72);
 #define FONT_20    (&lv_font_montserrat_30)
 #define FONT_24    (&lv_font_montserrat_36)
 #define FONT_28    (&lv_font_montserrat_42)
+#elif UI_H < 240
+// Small panels (T-Display-S3, 320x170): own layout in build_big/build_graph below, not a scaled copy.
+#define UI_COMPACT 1
+#define S(v) ((v) * 2 / 5)
+LV_FONT_DECLARE(font_glucose_112);
+#define FONT_HUGE  (&font_glucose_112)
+#define FONT_VALUE (&lv_font_montserrat_28)
+#define FONT_14    (&lv_font_montserrat_14)
+#define FONT_20    (&lv_font_montserrat_20)
+#define FONT_24    (&lv_font_montserrat_20)
+#define FONT_28    (&lv_font_montserrat_20)
 #else
 #define S(v) (v)
 LV_FONT_DECLARE(font_glucose_200);
@@ -178,7 +189,12 @@ static const int WINDOWS[5] = {1, 3, 6, 12, 24};
 static int g_window_idx = 1;  // 3h default
 static int32_t g_data[24 * 12 + 1];
 
+#if UI_COMPACT
+static lv_obj_t *g_win_label;
+static const int CHART_X = 34, CHART_Y = 36, CHART_W = UI_W - CHART_X - 8, CHART_H = UI_H - CHART_Y - 20;
+#else
 static const int CHART_X = S(70), CHART_Y = S(92), CHART_W = UI_W - CHART_X - S(20), CHART_H = S(300);
+#endif
 
 // ---------- helpers ----------
 static void fmt_age(char *out, size_t n, uint32_t age_s) {
@@ -197,6 +213,7 @@ static void goto_big(lv_event_t *)   { lv_screen_load(scr_big); }
 
 static void refresh_chart();
 
+#if !UI_COMPACT
 static void on_window_btn(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
   g_window_idx = idx;
@@ -224,8 +241,160 @@ static lv_obj_t *make_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, v
   lv_obj_center(l);
   return b;
 }
+#endif
 
 // ---------- build ----------
+// chart with the target band and threshold lines; shared by both layouts
+static void setup_chart(lv_obj_t *parent, int line_w) {
+  g_chart = lv_chart_create(parent);
+  lv_obj_set_pos(g_chart, CHART_X, CHART_Y);
+  lv_obj_set_size(g_chart, CHART_W, CHART_H);
+  lv_obj_set_style_pad_all(g_chart, 0, 0);
+  lv_obj_set_style_radius(g_chart, 0, 0);
+  lv_obj_set_style_bg_color(g_chart, C_BG, 0);
+  lv_obj_set_style_border_width(g_chart, 0, 0);
+  lv_obj_set_style_line_color(g_chart, lv_color_hex(0x1F2733), 0);   // div lines
+  lv_obj_set_style_line_width(g_chart, 1, 0);
+  lv_chart_set_type(g_chart, LV_CHART_TYPE_LINE);
+  lv_chart_set_range(g_chart, LV_CHART_AXIS_PRIMARY_Y, CHART_Y_MIN, CHART_Y_MAX);
+  lv_chart_set_div_line_count(g_chart, 0, 0);
+  lv_obj_set_style_size(g_chart, 0, 0, LV_PART_INDICATOR);           // no dots
+  lv_obj_set_style_line_width(g_chart, line_w, LV_PART_ITEMS);
+  lv_obj_set_style_line_rounded(g_chart, true, LV_PART_ITEMS);
+  lv_obj_remove_flag(g_chart, LV_OBJ_FLAG_SCROLLABLE);
+
+  // target band 70..200 (drawn underneath the series)
+  g_band = lv_obj_create(g_chart);
+  lv_obj_remove_style_all(g_band);
+  lv_obj_set_style_bg_color(g_band, C_OK, 0);
+  lv_obj_set_style_bg_opa(g_band, LV_OPA_10, 0);
+  lv_obj_set_pos(g_band, 0, chart_y_for(GLUCOSE_HIGH));
+  lv_obj_set_size(g_band, CHART_W, chart_y_for(GLUCOSE_LOW) - chart_y_for(GLUCOSE_HIGH));
+  lv_obj_move_background(g_band);
+
+  // threshold lines
+  const int yl[] = {GLUCOSE_HIGH, GLUCOSE_LOW};
+  for (int v : yl) {
+    lv_obj_t *ln = lv_obj_create(g_chart);
+    lv_obj_remove_style_all(ln);
+    lv_obj_set_style_bg_color(ln, v == GLUCOSE_HIGH ? C_HIGH : C_LOW, 0);
+    lv_obj_set_style_bg_opa(ln, LV_OPA_50, 0);
+    lv_obj_set_pos(ln, 0, chart_y_for(v));
+    lv_obj_set_size(ln, CHART_W, line_w > 2 ? line_w / 2 : 1);
+    lv_obj_move_background(ln);
+  }
+}
+
+#if UI_COMPACT
+static void build_big() {
+  scr_big = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(scr_big, C_BG, 0);
+  lv_obj_remove_flag(scr_big, LV_OBJ_FLAG_SCROLLABLE);
+
+  // number + arrow, centred together as a row
+  lv_obj_t *row = lv_obj_create(scr_big);
+  lv_obj_remove_style_all(row);
+  lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, 6, 0);
+  lv_obj_align(row, LV_ALIGN_CENTER, 0, -6);
+
+  big_value = lv_label_create(row);
+  lv_obj_set_style_text_font(big_value, FONT_HUGE, 0);
+  lv_obj_set_style_text_color(big_value, C_OK, 0);
+  lv_label_set_text(big_value, "---");
+
+  big_arrow_box = lv_obj_create(row);
+  lv_obj_remove_style_all(big_arrow_box);
+  lv_obj_set_size(big_arrow_box, 64, 80);
+  big_arrow = make_arrow(big_arrow_box, 60);
+
+  big_unit = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_unit, FONT_20, 0);
+  lv_obj_set_style_text_color(big_unit, C_MUTED, 0);
+  lv_label_set_text(big_unit, "mg/dL");
+  lv_obj_align(big_unit, LV_ALIGN_BOTTOM_LEFT, 10, -6);
+
+  big_age = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_age, FONT_20, 0);
+  lv_obj_set_style_text_color(big_age, C_MUTED, 0);
+  lv_label_set_text(big_age, "");
+  lv_obj_align(big_age, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
+
+  big_status = lv_label_create(scr_big);
+  lv_obj_set_style_text_font(big_status, FONT_14, 0);
+  lv_obj_set_style_text_color(big_status, C_MUTED, 0);
+  lv_obj_set_width(big_status, 200);
+  lv_label_set_long_mode(big_status, LV_LABEL_LONG_DOT);
+  lv_label_set_text(big_status, "");
+  lv_obj_align(big_status, LV_ALIGN_TOP_LEFT, 8, 6);
+
+  ind_big = make_indicators(scr_big);
+}
+
+static void build_graph() {
+  scr_graph = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(scr_graph, C_BG, 0);
+  lv_obj_remove_flag(scr_graph, LV_OBJ_FLAG_SCROLLABLE);
+
+  // ----- header: value, arrow, age ............ [!] window -----
+  g_value = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_value, FONT_VALUE, 0);
+  lv_obj_set_style_text_color(g_value, C_OK, 0);
+  lv_label_set_text(g_value, "---");
+  lv_obj_align(g_value, LV_ALIGN_TOP_LEFT, 8, 2);
+
+  g_arrow_box = lv_obj_create(scr_graph);
+  lv_obj_remove_style_all(g_arrow_box);
+  lv_obj_set_size(g_arrow_box, 28, 28);
+  lv_obj_align(g_arrow_box, LV_ALIGN_TOP_LEFT, 66, 2);
+  g_arrow = make_arrow(g_arrow_box, 26);
+
+  g_age = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_age, FONT_14, 0);
+  lv_obj_set_style_text_color(g_age, C_MUTED, 0);
+  lv_label_set_text(g_age, "");
+  lv_obj_align(g_age, LV_ALIGN_TOP_LEFT, 100, 10);
+
+  g_win_label = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_win_label, FONT_20, 0);
+  lv_obj_set_style_text_color(g_win_label, C_ACCENT, 0);
+  lv_obj_align(g_win_label, LV_ALIGN_TOP_RIGHT, -8, 6);
+
+  g_stale = lv_label_create(scr_graph);
+  lv_obj_set_style_text_font(g_stale, FONT_20, 0);
+  lv_obj_set_style_text_color(g_stale, C_LOW, 0);
+  lv_label_set_text(g_stale, LV_SYMBOL_WARNING);
+  lv_obj_align(g_stale, LV_ALIGN_TOP_RIGHT, -56, 6);
+  lv_obj_add_flag(g_stale, LV_OBJ_FLAG_HIDDEN);
+
+  g_status = lv_label_create(scr_graph);   // no room for it here; status shows on the big screen
+  lv_obj_add_flag(g_status, LV_OBJ_FLAG_HIDDEN);
+
+  // ----- chart -----
+  setup_chart(scr_graph, 2);
+
+  const int ylabels[] = {250, 200, 150, 70};
+  for (int v : ylabels) {
+    lv_obj_t *l = lv_label_create(scr_graph);
+    lv_obj_set_style_text_font(l, FONT_14, 0);
+    lv_obj_set_style_text_color(l, (v == GLUCOSE_HIGH) ? C_HIGH : (v == GLUCOSE_LOW) ? C_LOW : C_MUTED, 0);
+    lv_label_set_text_fmt(l, "%d", v);
+    lv_obj_set_width(l, CHART_X - 4);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(l, 0, CHART_Y + chart_y_for(v) - 8);
+  }
+  for (int i = 0; i < 3; i++) {
+    g_xlabels[i] = lv_label_create(scr_graph);
+    lv_obj_set_style_text_font(g_xlabels[i], FONT_14, 0);
+    lv_obj_set_style_text_color(g_xlabels[i], C_MUTED, 0);
+  }
+  g_series = lv_chart_add_series(g_chart, C_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+
+  ind_graph = ind_big;   // no room for status icons in the graph header; set_indicators just updates them twice
+}
+#else
 static void build_big() {
   scr_big = lv_obj_create(nullptr);
   lv_obj_set_style_bg_color(scr_big, C_BG, 0);
@@ -314,43 +483,7 @@ static void build_graph() {
   lv_obj_align(g_status, LV_ALIGN_TOP_RIGHT, S(-24), S(72));
 
   // ----- chart -----
-  g_chart = lv_chart_create(scr_graph);
-  lv_obj_set_pos(g_chart, CHART_X, CHART_Y);
-  lv_obj_set_size(g_chart, CHART_W, CHART_H);
-  lv_obj_set_style_pad_all(g_chart, 0, 0);
-  lv_obj_set_style_radius(g_chart, 0, 0);
-  lv_obj_set_style_bg_color(g_chart, C_BG, 0);
-  lv_obj_set_style_border_width(g_chart, 0, 0);
-  lv_obj_set_style_line_color(g_chart, lv_color_hex(0x1F2733), 0);   // div lines
-  lv_obj_set_style_line_width(g_chart, 1, 0);
-  lv_chart_set_type(g_chart, LV_CHART_TYPE_LINE);
-  lv_chart_set_range(g_chart, LV_CHART_AXIS_PRIMARY_Y, CHART_Y_MIN, CHART_Y_MAX);
-  lv_chart_set_div_line_count(g_chart, 0, 0);
-  lv_obj_set_style_size(g_chart, 0, 0, LV_PART_INDICATOR);           // no dots
-  lv_obj_set_style_line_width(g_chart, S(4), LV_PART_ITEMS);
-  lv_obj_set_style_line_rounded(g_chart, true, LV_PART_ITEMS);
-  lv_obj_remove_flag(g_chart, LV_OBJ_FLAG_SCROLLABLE);
-
-  // target band 70..200 (drawn underneath the series)
-  g_band = lv_obj_create(g_chart);
-  lv_obj_remove_style_all(g_band);
-  lv_obj_set_style_bg_color(g_band, C_OK, 0);
-  lv_obj_set_style_bg_opa(g_band, LV_OPA_10, 0);
-  lv_obj_set_pos(g_band, 0, chart_y_for(GLUCOSE_HIGH));
-  lv_obj_set_size(g_band, CHART_W, chart_y_for(GLUCOSE_LOW) - chart_y_for(GLUCOSE_HIGH));
-  lv_obj_move_background(g_band);
-
-  // threshold lines + y labels
-  const int yl[] = {GLUCOSE_HIGH, GLUCOSE_LOW};
-  for (int v : yl) {
-    lv_obj_t *ln = lv_obj_create(g_chart);
-    lv_obj_remove_style_all(ln);
-    lv_obj_set_style_bg_color(ln, v == GLUCOSE_HIGH ? C_HIGH : C_LOW, 0);
-    lv_obj_set_style_bg_opa(ln, LV_OPA_50, 0);
-    lv_obj_set_pos(ln, 0, chart_y_for(v));
-    lv_obj_set_size(ln, CHART_W, S(2));
-    lv_obj_move_background(ln);
-  }
+  setup_chart(scr_graph, S(4));
   const int ylabels[] = {300, 250, 200, 150, 100, 70, 40};
   for (int v : ylabels) {
     lv_obj_t *l = lv_label_create(scr_graph);
@@ -389,6 +522,7 @@ static void build_graph() {
 
   ind_graph = make_indicators(scr_graph);
 }
+#endif
 
 // ---------- refresh ----------
 static void refresh_chart() {
@@ -408,6 +542,10 @@ static void refresh_chart() {
   lv_label_set_text(g_xlabels[1], b);
   lv_obj_align_to(g_xlabels[1], g_chart, LV_ALIGN_OUT_BOTTOM_MID, 0, S(4));
   lv_label_set_text(g_xlabels[2], "now");
+#if UI_COMPACT
+  snprintf(b, sizeof b, "%dh", hours);
+  lv_label_set_text(g_win_label, b);
+#endif
   lv_obj_align_to(g_xlabels[2], g_chart, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, S(4));
 }
 
@@ -467,6 +605,15 @@ static void init() {
   refresh_chart();
   lv_timer_create(on_tick, 10000, nullptr);   // age text is minute-granular; no need to re-check every second
   lv_screen_load(scr_big);
+}
+
+// button navigation (boards without touch)
+static void toggle_screen() {
+  lv_screen_load(lv_screen_active() == scr_big ? scr_graph : scr_big);
+}
+static void next_window() {
+  g_window_idx = (g_window_idx + 1) % 5;
+  refresh_chart();
 }
 
 // call when a new reading arrives
