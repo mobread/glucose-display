@@ -1,4 +1,4 @@
-# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5" / LilyGo T-Display-S3)
+# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5" / LilyGo T-Display-S3 / M5StickC Plus)
 
 LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant. Two boards:
 
@@ -7,6 +7,7 @@ LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant.
 | Elecrow CrowPanel Advance 7.0" (ESP32-S3-WROOM-1-N16R8, 800x480 RGB, GT911) | `crowpanel-advance-7`, `dummy` | home LAN only |
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-5 (ESP32-P4 rev3, 720x1280 MIPI-DSI HX8394, GT911, ESP32-C6 WiFi) | `waveshare-p4-5`, `waveshare-p4-5-dummy` | runs landscape 1280x720; on-device WiFi setup; optional WireGuard tunnel home — [details](#waveshare-esp32-p4-wifi6-touch-lcd-5) |
 | LilyGo T-Display-S3 (ESP32-S3R8, 1.9" 170x320 ST7789, 8-bit parallel, no touch) | `tdisplay-s3`, `tdisplay-s3-dummy` | runs landscape 320x170 with its own compact layout; side buttons instead of touch; home LAN only — [details](#lilygo-t-display-s3) |
+| M5StickC Plus (ESP32-PICO-D4, 1.14" 135x240 ST7789, AXP192, no PSRAM) | `m5stickc-plus`, `m5stickc-plus-dummy` | landscape 240x135, big number + arrow only (no graph); optional WireGuard tunnel home — [details](#m5stickc-plus) |
 
 - **Big screen**: current mg/dL in 200px digits, trend arrow, age of reading. Tap anywhere -> graph.
 - **Graph screen**: 1h / 3h / 6h / 12h / 24h history, target band 70-200 shaded, threshold lines, `Back` button.
@@ -165,6 +166,22 @@ pio device monitor -e tdisplay-s3
 
 To go back to the MicroPython apps in `../esp-lcd`, run its `flash.sh` and then `deploy.sh <app>`.
 
+## M5StickC Plus
+
+The smallest build: 1.14" ST7789V2 (135x240, run as 240x135 landscape) over SPI, driven by LovyanGFX (`include/board_m5stickc_plus.h`). It shows only the **big-number screen** — current value in 90 px digits (`src/font_glucose_90.c`, sized so `400` + arrow fits in 240 px) with the trend arrow beside it, `mg/dL` bottom-left, the reading's age bottom-right, status text top-left and WiFi / VPN / HA icons top-right. The board sets `UI_NO_GRAPH`, so `ui.h` never builds the graph screen, and it backfills only 2 h of history (`HISTORY_HOURS`) — enough for the trend fallback — to save RAM. Buttons are unused.
+
+- **Power / backlight**: the LCD and backlight run off the AXP192 PMU (I2C 0x34 on GPIO21/22). Brightness drives LDO2 between 2.9 V (`BACKLIGHT_MIN_MV`; the LED is barely lit below that) and 3.3 V; 0 % switches LDO2 off. The AXP192's side button still powers the stick on (short press) / off (hold 6 s).
+- **Memory**: no PSRAM, so LVGL gets a 40 KB pool and a 14 KB draw buffer; ~200 KB internal heap is free at boot before WiFi.
+- **WireGuard**: same tunnel code as the P4 (`include/wg_tunnel.h`). Give it its **own peer** — two devices sharing one key fight over the session. `secrets.h` has a per-board override block under `#if defined(BOARD_M5STICKC_PLUS)` for the `WG_*` values; the server must let the new tunnel IP reach HA on port 8123.
+- **Flash**: 4 MB, so it uses the `huge_app.csv` table (3 MB app, no OTA).
+
+```sh
+pio run -e m5stickc-plus -t upload --upload-port /dev/cu.usbserial-*   # or -e m5stickc-plus-dummy
+pio device monitor -p /dev/cu.usbserial-* -b 115200
+```
+
+If the link fails with `ed25519_... file in wrong format` after building the P4: the WireGuard library writes objects to a shared `.pio/build/port` folder, so P4 (RISC-V) and M5 (Xtensa) builds clash. `rm -rf .pio/build/port` and build again.
+
 ## Display stability (CrowPanel, hard-won)
 
 The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes for that bus and shows up as flicker/artifacts. What works:
@@ -198,15 +215,16 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 
 - `include/board.h`   — picks the board header (`BOARD_WAVESHARE_P4_5` or CrowPanel)
 - `include/board_tdisplay_s3.h` — LilyGo T-Display-S3: ST7789 over `Bus_Parallel8` (LovyanGFX), LVGL partial render, PWM backlight, debounced side buttons
+- `include/board_m5stickc_plus.h` — M5StickC Plus: ST7789 over SPI (LovyanGFX), AXP192 power + LDO2 backlight, LVGL partial render
 - `include/board_crowpanel.h` — display (esp_lcd RGB, single PSRAM framebuffer + LVGL partial render), GT911 touch, backlight (V1.0 TCA9534 or V1.2+ ctrl MCU @0x30)
 - `include/board_waveshare_p4_5.h` — MIPI-DSI HX8394 panel, rotated flush, GT911 touch with reset, LEDC backlight
 - `include/glucose.h` — ring buffer, thresholds, trend calc, windowing, dummy source
 - `include/ha_source.h` — NTP, HA REST polling (readings, history backfill, brightness setting)
 - `include/wifi_mgr.h` — WiFi connection + NVS-saved credentials, scan/connect requests from the UI
-- `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare build)
+- `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare and M5StickC Plus builds)
 - `include/ui.h`      — big-number and graph screens, scaled by `S()` for the panel size
 - `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
-- `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main
+- `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` / `_90.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main; `_90.c` M5StickC Plus main
 - `src/font_status_icons.c` — wifi / lock / home glyphs from LVGL's FontAwesome5 file (`lv_font_conv --size 22 -r 0xF1EB,0xF023,0xF015`)
 - `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example

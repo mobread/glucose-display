@@ -17,7 +17,9 @@
 namespace ha {
 
 static const uint32_t POLL_MS = 60 * 1000;       // check for a new reading every minute
-static const uint32_t HISTORY_HOURS = 24;
+#ifndef HISTORY_HOURS
+#define HISTORY_HOURS 24   // boards without a graph only need enough for the trend fallback
+#endif
 static const int MAX_BATCH = 320;
 
 struct Batch {

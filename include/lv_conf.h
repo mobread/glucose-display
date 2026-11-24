@@ -6,6 +6,10 @@
 #if defined(BOARD_WAVESHARE_P4_5)
 // plenty of PSRAM: use the system heap (large allocations spill to PSRAM) instead of a fixed pool
 #define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+#elif defined(BOARD_M5STICKC_PLUS)
+// no PSRAM and a single screen: a small pool leaves internal RAM for WiFi + WireGuard
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_BUILTIN
+#define LV_MEM_SIZE (40 * 1024U)
 #else
 #define LV_USE_STDLIB_MALLOC LV_STDLIB_BUILTIN
 #define LV_MEM_SIZE (96 * 1024U)

@@ -26,11 +26,23 @@ LV_FONT_DECLARE(font_glucose_72);
 #define FONT_24    (&lv_font_montserrat_36)
 #define FONT_28    (&lv_font_montserrat_42)
 #elif UI_H < 240
-// Small panels (T-Display-S3, 320x170): own layout in build_big/build_graph below, not a scaled copy.
+// Small panels (T-Display-S3 320x170, M5StickC Plus 240x135): own layout in build_big/build_graph
+// below, not a scaled copy.
 #define UI_COMPACT 1
 #define S(v) ((v) * 2 / 5)
+#if UI_W < 320
+LV_FONT_DECLARE(font_glucose_90);   // "400" + arrow has to fit in 240 px
+#define FONT_HUGE  (&font_glucose_90)
+#define BIG_ARROW_BOX_W 50
+#define BIG_ARROW_BOX_H 64
+#define BIG_ARROW_SIZE  48
+#else
 LV_FONT_DECLARE(font_glucose_112);
 #define FONT_HUGE  (&font_glucose_112)
+#define BIG_ARROW_BOX_W 64
+#define BIG_ARROW_BOX_H 80
+#define BIG_ARROW_SIZE  60
+#endif
 #define FONT_VALUE (&lv_font_montserrat_28)
 #define FONT_14    (&lv_font_montserrat_14)
 #define FONT_20    (&lv_font_montserrat_20)
@@ -48,6 +60,11 @@ LV_FONT_DECLARE(font_glucose_200);
 #define FONT_20    (&lv_font_montserrat_20)
 #define FONT_24    (&lv_font_montserrat_24)
 #define FONT_28    (&lv_font_montserrat_28)
+#endif
+
+// UI_NO_GRAPH (set by the board): big-number screen only, no graph screen or chart.
+#ifndef UI_NO_GRAPH
+#define UI_NO_GRAPH 0
 #endif
 
 LV_FONT_DECLARE(font_status_icons);   // Font Awesome wifi / lock / home, 22 px
@@ -307,8 +324,8 @@ static void build_big() {
 
   big_arrow_box = lv_obj_create(row);
   lv_obj_remove_style_all(big_arrow_box);
-  lv_obj_set_size(big_arrow_box, 64, 80);
-  big_arrow = make_arrow(big_arrow_box, 60);
+  lv_obj_set_size(big_arrow_box, BIG_ARROW_BOX_W, BIG_ARROW_BOX_H);
+  big_arrow = make_arrow(big_arrow_box, BIG_ARROW_SIZE);
 
   big_unit = lv_label_create(scr_big);
   lv_obj_set_style_text_font(big_unit, FONT_20, 0);
@@ -325,7 +342,7 @@ static void build_big() {
   big_status = lv_label_create(scr_big);
   lv_obj_set_style_text_font(big_status, FONT_14, 0);
   lv_obj_set_style_text_color(big_status, C_MUTED, 0);
-  lv_obj_set_width(big_status, 200);
+  lv_obj_set_width(big_status, UI_W - 120);   // leaves room for the status icons top-right
   lv_label_set_long_mode(big_status, LV_LABEL_LONG_DOT);
   lv_label_set_text(big_status, "");
   lv_obj_align(big_status, LV_ALIGN_TOP_LEFT, 8, 6);
@@ -333,6 +350,9 @@ static void build_big() {
   ind_big = make_indicators(scr_big);
 }
 
+#if UI_NO_GRAPH
+static void build_graph() { ind_graph = ind_big; }   // set_indicators just updates the same icons twice
+#else
 static void build_graph() {
   scr_graph = lv_obj_create(nullptr);
   lv_obj_set_style_bg_color(scr_graph, C_BG, 0);
@@ -394,6 +414,7 @@ static void build_graph() {
 
   ind_graph = ind_big;   // no room for status icons in the graph header; set_indicators just updates them twice
 }
+#endif  // UI_NO_GRAPH
 #else
 static void build_big() {
   scr_big = lv_obj_create(nullptr);
@@ -526,6 +547,7 @@ static void build_graph() {
 
 // ---------- refresh ----------
 static void refresh_chart() {
+  if (UI_NO_GRAPH) return;
   int hours = WINDOWS[g_window_idx];
   int n = hours * 12 + 1;
   glucose::window(hours, g_data, n, LV_CHART_POINT_NONE);
@@ -564,7 +586,7 @@ static void refresh_values() {
     set_text_if_changed(big_value, "---");
     set_color_if_changed(big_value, C_STALE);
     set_text_if_changed(big_age, "waiting for data");
-    set_text_if_changed(g_value, "---");
+    if (!UI_NO_GRAPH) set_text_if_changed(g_value, "---");
     return;
   }
   uint32_t age = glucose::now() - r->ts;
@@ -578,6 +600,7 @@ static void refresh_values() {
   set_color_if_changed(big_value, c);
   set_text_if_changed(big_age, age_s);
   set_color_if_changed(big_age, stale ? C_LOW : C_MUTED);
+  if (UI_NO_GRAPH) return;
   set_text_if_changed(g_value, val_s);
   set_color_if_changed(g_value, c);
   set_text_if_changed(g_age, age_s);
@@ -591,6 +614,7 @@ static void refresh_trend() {
   lv_color_t c = r ? color_for(r->value, stale) : C_STALE;
   Trend t = r ? glucose::trend() : TREND_UNKNOWN;
   arrow_set(big_arrow, t, c);
+  if (UI_NO_GRAPH) return;
   arrow_set(g_arrow, t, c);
   lv_chart_set_series_color(g_chart, g_series, c);
 }
@@ -609,6 +633,7 @@ static void init() {
 
 // button navigation (boards without touch)
 static void toggle_screen() {
+  if (UI_NO_GRAPH) return;
   lv_screen_load(lv_screen_active() == scr_big ? scr_graph : scr_big);
 }
 static void next_window() {
@@ -638,7 +663,7 @@ static void set_indicators(bool wifi, int vpn, bool ha) {
 // connection / source status shown in the corner ("" = hide)
 static void set_status(const char *s) {
   set_text_if_changed(big_status, s);
-  set_text_if_changed(g_status, s);
+  if (!UI_NO_GRAPH) set_text_if_changed(g_status, s);
 }
 
 }  // namespace ui
