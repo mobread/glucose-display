@@ -81,6 +81,15 @@ static Trend parse_trend(const char *t) {
   if (!strcmp(t, "falling_slightly")) return TREND_45_DOWN;
   if (!strcmp(t, "falling"))          return TREND_SINGLE_DOWN;
   if (!strcmp(t, "falling_quickly"))  return TREND_DOUBLE_DOWN;
+  // Medtronic CareLink (lastSGTrend): 1/2/3 arrows = >=1/2/3 mg/dL/min, which lines up with
+  // Dexcom's 45-degree / single / double arrows. NONE = no arrows on the pump = steady.
+  if (!strcmp(t, "NONE") || !strcmp(t, "FLAT")) return TREND_FLAT;
+  if (!strcmp(t, "UP"))          return TREND_45_UP;
+  if (!strcmp(t, "UP_DOUBLE"))   return TREND_SINGLE_UP;
+  if (!strcmp(t, "UP_TRIPLE"))   return TREND_DOUBLE_UP;
+  if (!strcmp(t, "DOWN"))        return TREND_45_DOWN;
+  if (!strcmp(t, "DOWN_DOUBLE")) return TREND_SINGLE_DOWN;
+  if (!strcmp(t, "DOWN_TRIPLE")) return TREND_DOUBLE_DOWN;
   Serial.printf("[ha] unknown trend '%s'\n", t);
   return TREND_UNKNOWN;
 }
@@ -144,6 +153,17 @@ static bool fetch_current(Reading &out, Trend &trend) {
   }
   out.value = atoi(state);
   out.ts = parse_iso8601(doc["last_changed"]);
+#ifdef HA_ENTITY_TIMESTAMP
+  // Some integrations (CareLink) poll a cloud API: the value's last_changed doesn't move when two
+  // readings in a row are equal. HA_ENTITY_TIMESTAMP is a "reading time" entity that changes with
+  // every new reading; use when HA saw it change. Not its state: CareLink converts the pump's local
+  // time with HA's timezone, so the state is off by the timezone difference between the two.
+  body = "";
+  if (http_get(String("/api/states/") + HA_ENTITY_TIMESTAMP, body) == 200 && !deserializeJson(doc, body)) {
+    uint32_t t = parse_iso8601(doc["last_changed"]);
+    if (t) out.ts = t;
+  }
+#endif
 
   body = "";
   if (http_get(String("/api/states/") + HA_ENTITY_TREND, body) == 200 && !deserializeJson(doc, body)) {
@@ -153,6 +173,15 @@ static bool fetch_current(Reading &out, Trend &trend) {
 }
 
 static bool fetch_history(Batch &b) {
+#ifdef HA_ENTITY_TIMESTAMP
+  // The value's history only has an entry when the number changed, so its times don't line up with
+  // the readings; start from just the current reading (the trend comes from HA_ENTITY_TREND).
+  Reading cur; Trend tr;
+  b.n = 0;
+  b.replace = true;
+  if (fetch_current(cur, tr)) b.r[b.n++] = cur;
+  return b.n || sensor_unavailable;   // false = HA itself unreachable
+#endif
   time_t now = time(nullptr);
   time_t start = now - HISTORY_HOURS * 3600;
   struct tm tmv; gmtime_r(&start, &tmv);

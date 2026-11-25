@@ -206,6 +206,13 @@ The hotspot also reopens by itself if WiFi has been down for 45 s (`PORTAL_AFTER
 
 **WireGuard**: its own peer in the `#if defined(BOARD_M5STICKS3)` block in `secrets.h`; the server must let that tunnel IP reach HA.
 
+**Data source**: the same `secrets.h` block can point the stick at different HA entities. Ours shows a Medtronic pump through the [CareLink integration](https://github.com/yo-han/Home-Assistant-Carelink) instead of the Dexcom sensors:
+- `HA_ENTITY_VALUE` = `..._last_glucose_level_mg_dl`
+- `HA_ENTITY_TREND` = `..._last_glucose_trend`. CareLink's `UP` / `UP_DOUBLE` / `UP_TRIPLE` (1/2/3 arrows, ≥1/2/3 mg/dL/min) map to the diagonal / single / double arrows; `NONE` / `FLAT` = steady.
+- `HA_ENTITY_TIMESTAMP` = `..._last_glucose_update`. Its **last_changed** is used as the reading time, because the value's own last_changed doesn't move when two readings in a row are equal. Its *state* is not used: CareLink converts the pump's local time with HA's timezone, so it's off by the difference between the two (an hour here).
+
+With a timestamp entity the stick skips the history backfill and starts from the current reading.
+
 **Flashing**: native USB-C (`/dev/cu.usbmodem*`). If the stick doesn't show up, hold the power button until the green LED blinks (download mode). Afterwards it stays in download mode, even after an esptool/RTS reset, until you **single-click** the power button.
 
 ```sh
