@@ -194,6 +194,7 @@ static lv_obj_t *scr_graph = nullptr;
 
 // big screen
 static lv_obj_t *big_value, *big_unit, *big_age, *big_hint, *big_arrow_box, *big_status;
+static lv_obj_t *big_batt = nullptr;   // battery boards: top-left, where the status text goes when it's empty
 static Arrow big_arrow;
 
 // graph screen
@@ -694,9 +695,32 @@ static void show_overlay(const char *title, const char *body = "", const char *h
   lv_obj_remove_flag(ov, LV_OBJ_FLAG_HIDDEN);
 }
 
+// battery level next to the status text; pct < 0 hides it. Status text wins the corner when set.
+static void set_battery(int pct, bool charging) {
+  if (!big_batt) {
+    big_batt = lv_label_create(scr_big);
+    lv_obj_set_style_text_font(big_batt, FONT_14, 0);
+    lv_obj_align_to(big_batt, big_status, LV_ALIGN_TOP_LEFT, 0, 0);
+  }
+  if (pct < 0) { lv_obj_add_flag(big_batt, LV_OBJ_FLAG_HIDDEN); return; }
+  const char *sym = charging ? LV_SYMBOL_CHARGE
+                  : pct > 80 ? LV_SYMBOL_BATTERY_FULL : pct > 55 ? LV_SYMBOL_BATTERY_3
+                  : pct > 30 ? LV_SYMBOL_BATTERY_2 : pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+  char b[24];
+  snprintf(b, sizeof b, "%s %d%%", sym, pct);
+  set_text_if_changed(big_batt, b);
+  set_color_if_changed(big_batt, (pct <= 15 && !charging) ? C_LOW : C_MUTED);
+  if (lv_label_get_text(big_status)[0]) lv_obj_add_flag(big_batt, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_remove_flag(big_batt, LV_OBJ_FLAG_HIDDEN);
+}
+
 // connection / source status shown in the corner ("" = hide)
 static void set_status(const char *s) {
   set_text_if_changed(big_status, s);
+  if (big_batt) {
+    if (s[0]) lv_obj_add_flag(big_batt, LV_OBJ_FLAG_HIDDEN);
+    else if (lv_label_get_text(big_batt)[0]) lv_obj_remove_flag(big_batt, LV_OBJ_FLAG_HIDDEN);
+  }
   if (!UI_NO_GRAPH) set_text_if_changed(g_status, s);
 }
 

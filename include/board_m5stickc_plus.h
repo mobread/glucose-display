@@ -118,6 +118,19 @@ static void set_brightness(int pct) {
   if (!(pwr & 0x04)) axp_write(0x12, pwr | 0x04);
 }
 
+// ---------- battery ----------
+#define HAS_BATTERY 1
+// pct: 3.30 V = 0 %, 4.15 V = 100 % (M5Unified's curve); false if there's no battery to report.
+// Main loop only (shares Wire with set_brightness).
+static bool battery(int &pct, bool &charging, int &mv) {
+  uint8_t hi = axp_read(0x78), lo = axp_read(0x79);
+  mv = ((hi << 4) | (lo & 0x0F)) * 11 / 10;          // 12-bit, 1.1 mV per step
+  if (mv < 2500) return false;                       // no battery connected
+  pct = constrain((mv - 3300) * 100 / (4150 - 3300), 0, 100);
+  charging = axp_read(0x00) & 0x04;                  // battery current flowing in
+  return true;
+}
+
 // ---------- LVGL ----------
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   const int w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;

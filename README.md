@@ -172,6 +172,7 @@ To go back to the MicroPython apps in `../esp-lcd`, run its `flash.sh` and then 
 The smallest build: 1.14" ST7789V2 (135x240, run as 240x135 landscape) over SPI, driven by LovyanGFX (`include/board_m5stickc_plus.h`). It shows only the **big-number screen** — current value in 90 px digits (`src/font_glucose_90.c`, sized so `400` + arrow fits in 240 px) with the trend arrow beside it, `mg/dL` bottom-left, the reading's age bottom-right, status text top-left and WiFi / VPN / HA icons top-right. The board sets `UI_NO_GRAPH`, so `ui.h` never builds the graph screen, and it backfills only 2 h of history (`HISTORY_HOURS`) — enough for the trend fallback — to save RAM. Buttons are unused.
 
 - **Power / backlight**: the LCD and backlight run off the AXP192 PMU (I2C 0x34 on GPIO21/22). Brightness drives LDO2 between 2.9 V (`BACKLIGHT_MIN_MV`; the LED is barely lit below that) and 3.3 V; 0 % switches LDO2 off. The AXP192's side button still powers the stick on (short press) / off (hold 6 s).
+- **Battery**: read every 30 s (AXP192 0x78 = voltage, 0x00 bit 2 = charging) and shown top-left as a battery symbol + percentage (3.30 V = 0 %, 4.15 V = 100 %, M5Unified's curve), a bolt while charging, red at 15 % or below. Status text (`VPN down`, ...) takes that corner while it's set. Same on the StickS3.
 - **Memory**: no PSRAM, so LVGL gets a 40 KB pool and a 14 KB draw buffer; ~200 KB internal heap is free at boot before WiFi.
 - **WireGuard**: same tunnel code as the P4 (`include/wg_tunnel.h`). Give it its **own peer** — two devices sharing one key fight over the session. `secrets.h` has a per-board override block under `#if defined(BOARD_M5STICKC_PLUS)` for the `WG_*` values; the server must let the new tunnel IP reach HA on port 8123.
 - **Flash**: 4 MB, so it uses the `huge_app.csv` table (3 MB app, no OTA).
@@ -189,6 +190,7 @@ Same big-number-only screen as the M5StickC Plus, on an ESP32-S3 with 8 MB PSRAM
 
 - **Power**: the LCD and backlight are on the M5PM1 PMIC's L3B rail (I2C 0x6E on GPIO47/48). It is switched on by making PMIC GPIO2 a push-pull output and driving it **high**; until then the panel is dead.
 - **Display**: ST7789P3 over SPI (SCLK 40, MOSI 39, DC 45, CS 41, RST 21), offsets 52/40 like the StickC Plus. The backlight is PWM on GPIO38 (256 Hz). 1 % brightness starts at `BACKLIGHT_MIN_DUTY` so low HA settings stay readable.
+- **Battery**: VBAT from PMIC register 0x22 (mV), charging from PMIC GPIO0 (CHG_STAT, low = charging); shown top-left (see the StickC Plus section).
 - **Buttons**: A = GPIO11 (front), B = GPIO12 (side), active low. Hold **A** for 2 s to open/close the WiFi setup hotspot. Hold **B** for 2 s to forget every saved network (wiped from flash) and go back to setup.
 
 ### WiFi setup (captive portal)

@@ -132,6 +132,23 @@ static void set_brightness(int pct) {
   lcd.setBrightness(pct == 0 ? 0 : (uint8_t)(BACKLIGHT_MIN_DUTY + (255 - BACKLIGHT_MIN_DUTY) * pct / 100));
 }
 
+// ---------- battery ----------
+#define HAS_BATTERY 1
+// pct: 3.30 V = 0 %, 4.15 V = 100 % (M5Unified's curve); false if there's no battery to report.
+// Main loop only (shares Wire with set_brightness).
+static bool battery(int &pct, bool &charging, int &mv) {
+  Wire.beginTransmission(PM1_ADDR);
+  Wire.write(0x22);                                  // VBAT, mV, little endian
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)PM1_ADDR, (uint8_t)2) != 2) return false;
+  mv = Wire.read();
+  mv |= Wire.read() << 8;
+  if (mv < 2500) return false;                       // no battery connected
+  pct = constrain((mv - 3300) * 100 / (4150 - 3300), 0, 100);
+  charging = !(pm1_read(0x12) & 0x01);               // PM1 GPIO0 = charger CHG_STAT, low = charging
+  return true;
+}
+
 // ---------- buttons ----------
 enum : uint8_t { BTN_A = 1, BTN_B = 2 };
 

@@ -113,6 +113,24 @@ void loop() {
     ui::on_new_reading();
   }
 #endif
+#ifdef HAS_BATTERY
+  // one I2C read every 30 s; next to the display and WiFi this costs nothing measurable
+  static uint32_t last_batt = 0, last_batt_log = 0;
+  if (!last_batt || millis() - last_batt > 30000) {
+    last_batt = millis();
+    int pct = -1, mv = 0;
+    bool chg = false;
+    if (board::battery(pct, chg, mv)) {
+      if (!last_batt_log || millis() - last_batt_log > 300000) {
+        last_batt_log = millis();
+        Serial.printf("[battery] %d mV, %d%%%s\n", mv, pct, chg ? ", charging" : "");
+      }
+    } else {
+      pct = -1;
+    }
+    ui::set_battery(pct, chg);
+  }
+#endif
   lv_timer_handler();
   delay(2);
 }
