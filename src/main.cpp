@@ -51,9 +51,14 @@ void loop() {
 #endif
 #if defined(BOARD_M5STICKS3) && USE_HA
   // hold the front button (A) 2 s: open / close the WiFi setup hotspot
+  // hold the side button (B) 2 s: forget all saved WiFi and go back to setup (hotspot opens itself)
   board::BtnEvents btn = board::poll_buttons();
   if (btn.long_pressed & board::BTN_A) {
     if (portal::active()) portal::request_stop(); else portal::request_start();
+  }
+  if (btn.long_pressed & board::BTN_B) {
+    net::request_forget_all();
+    ui::show_overlay("WiFi setup", "Forgetting saved WiFi...", "");
   }
 #endif
 #if WIFI_PORTAL && USE_HA

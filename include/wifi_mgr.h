@@ -40,6 +40,7 @@ static bool ever_connected = false;
 // UI -> task requests
 static bool scan_requested = false;
 static bool connect_requested = false;
+static bool forget_all_requested = false;
 static char req_ssid[33], req_pass[65];
 
 // task -> UI scan results
@@ -79,6 +80,14 @@ static void request_connect(const char *ssid, const char *pass) {
   // before the task has picked the request up (cur_ssid is only ever written by the task)
   state = CONNECTING;
   fail_reason[0] = 0;
+}
+
+// Forget every saved network and drop the connection; the state becomes NO_CONFIG, which is
+// what opens the captive portal (wifi_portal.h). The built-in WIFI_SSID is not used again.
+static void request_forget_all() {
+  Lock l;
+  forget_all_requested = true;
+  connect_requested = false;
 }
 
 static State get_state(char *ssid_out = nullptr, size_t n = 0, char *reason_out = nullptr, size_t rn = 0) {
@@ -283,6 +292,19 @@ static bool service() {
   bool do_scan_now = false, do_connect_now = false;
   {
     Lock l;
+    if (forget_all_requested) {
+      forget_all_requested = false;
+      known_count = 0;
+      Preferences p;   // wipe the whole namespace, so no old passwords stay in flash
+      p.begin("wifi", false);
+      p.clear();
+      p.end();
+      cur_ssid[0] = cur_pass[0] = 0;
+      save_on_connect = false;
+      state = NO_CONFIG;
+      fail_reason[0] = 0;
+      Serial.println("[wifi] forgot all saved networks");
+    }
     if (scan_requested) { scan_requested = false; do_scan_now = true; }
     if (connect_requested) {
       connect_requested = false; do_connect_now = true;
@@ -290,6 +312,7 @@ static bool service() {
       strlcpy(cur_pass, req_pass, sizeof cur_pass);
     }
   }
+  if (!cur_ssid[0] && WiFi.status() == WL_CONNECTED) WiFi.disconnect();   // after forget-all
   if (do_connect_now) { save_on_connect = true; start_connect(); }
   if (do_scan_now) do_scan();
 

@@ -189,7 +189,7 @@ Same big-number-only screen as the M5StickC Plus, on an ESP32-S3 with 8 MB PSRAM
 
 - **Power**: the LCD and backlight are on the M5PM1 PMIC's L3B rail (I2C 0x6E on GPIO47/48). It is switched on by making PMIC GPIO2 a push-pull output and driving it **high**; until then the panel is dead.
 - **Display**: ST7789P3 over SPI (SCLK 40, MOSI 39, DC 45, CS 41, RST 21), offsets 52/40 like the StickC Plus. The backlight is PWM on GPIO38 (256 Hz). 1 % brightness starts at `BACKLIGHT_MIN_DUTY` so low HA settings stay readable.
-- **Buttons**: A = GPIO11 (front), B = GPIO12 (side), active low. Hold **A** for 2 s to open/close the WiFi setup hotspot.
+- **Buttons**: A = GPIO11 (front), B = GPIO12 (side), active low. Hold **A** for 2 s to open/close the WiFi setup hotspot. Hold **B** for 2 s to forget every saved network (wiped from flash) and go back to setup.
 
 ### WiFi setup (captive portal)
 
@@ -199,6 +199,8 @@ Same big-number-only screen as the M5StickC Plus, on an ESP32-S3 with 8 MB PSRAM
 2. Join it from a phone. The stick answers every DNS lookup with its own address and redirects the OS connectivity checks, so the sign-in sheet pops up (otherwise open http://192.168.4.1).
 3. Pick a network from the scan (or type a hidden one), enter the password, and tap **Connect**. The page polls and shows success or the reason it failed.
 4. Credentials go through `wifi_mgr.h`, so they're saved only after they actually connect, alongside up to 8 saved networks. The hotspot closes 20 s after connecting.
+
+To start over (new router, moving it to another network), hold **B** for 2 s: all saved networks are erased, WiFi disconnects and the hotspot opens. Holding **A** instead opens the hotspot but keeps the saved networks, so if you close it again (hold A) the stick goes back to what it had.
 
 The hotspot also reopens by itself if WiFi has been down for 45 s (`PORTAL_AFTER_MS`). While it's up, the saved network is retried once a minute without scanning, so the phone isn't dropped. If that network comes back, the hotspot closes again. The portal runs in its own task, so the page stays responsive while the HA task blocks on HTTP.
 
