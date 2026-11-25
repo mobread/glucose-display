@@ -8,6 +8,8 @@
 #include "board_tdisplay_s3.h"
 #elif defined(BOARD_M5STICKC_PLUS)
 #include "board_m5stickc_plus.h"
+#elif defined(BOARD_M5STICKS3)
+#include "board_m5sticks3.h"
 #else
 #include "board_crowpanel.h"
 #endif

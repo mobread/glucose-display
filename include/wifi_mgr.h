@@ -54,6 +54,10 @@ static const int MAX_KNOWN = 8;
 static Known known[MAX_KNOWN];
 static int known_count = 0;
 
+// Set while the captive portal (wifi_portal.h) is up: retry the current network only once a
+// minute and never scan for other saved networks, so the access point the phone is on stays put.
+static volatile bool hold_retries = false;
+
 // task-private
 static uint32_t attempt_start = 0;
 static bool save_on_connect = false;   // user picked this network: remember it once it connects
@@ -310,7 +314,7 @@ static bool service() {
   }
 
   if (state == CONNECTED) start_connect();   // dropped: auto-reconnect is on, but restart the timer/state
-  if (millis() - attempt_start > 20000) {
+  if (millis() - attempt_start > (hold_retries && !save_on_connect ? 60000u : 20000u)) {
     const char *why = st == WL_NO_SSID_AVAIL ? "network not found"
                     : st == WL_CONNECT_FAILED ? "wrong password?"
                     : "couldn't connect";
@@ -319,7 +323,7 @@ static bool service() {
     // A network the user just picked keeps being retried (they see the error on the setup screen).
     // Otherwise fall over to the strongest visible saved network, else retry the same one.
     // Either way keep the FAILED state (and reason) visible until something actually connects.
-    if (!save_on_connect) pick_best_known();
+    if (!save_on_connect && !hold_retries) pick_best_known();
     WiFi.disconnect();
     vTaskDelay(pdMS_TO_TICKS(100));
     Serial.printf("[wifi] retrying '%s'\n", cur_ssid);

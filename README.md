@@ -1,4 +1,4 @@
-# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5" / LilyGo T-Display-S3 / M5StickC Plus)
+# Glucose Display (CrowPanel Advance 7" / Waveshare ESP32-P4 5" / LilyGo T-Display-S3 / M5StickC Plus / M5StickS3)
 
 LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant. Two boards:
 
@@ -8,6 +8,7 @@ LVGL 9 firmware for a bedside/desk Dexcom glucose display fed by Home Assistant.
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-5 (ESP32-P4 rev3, 720x1280 MIPI-DSI HX8394, GT911, ESP32-C6 WiFi) | `waveshare-p4-5`, `waveshare-p4-5-dummy` | runs landscape 1280x720; on-device WiFi setup; optional WireGuard tunnel home — [details](#waveshare-esp32-p4-wifi6-touch-lcd-5) |
 | LilyGo T-Display-S3 (ESP32-S3R8, 1.9" 170x320 ST7789, 8-bit parallel, no touch) | `tdisplay-s3`, `tdisplay-s3-dummy` | runs landscape 320x170 with its own compact layout; side buttons instead of touch; home LAN only — [details](#lilygo-t-display-s3) |
 | M5StickC Plus (ESP32-PICO-D4, 1.14" 135x240 ST7789, AXP192, no PSRAM) | `m5stickc-plus`, `m5stickc-plus-dummy` | landscape 240x135, big number + arrow only (no graph); optional WireGuard tunnel home — [details](#m5stickc-plus) |
+| M5Stack StickS3 (ESP32-S3-PICO-1-N8R8, 1.14" 135x240 ST7789P3, M5PM1) | `m5sticks3`, `m5sticks3-dummy` | same big-number screen as the StickC Plus; WiFi set up from a phone through a captive portal; optional WireGuard — [details](#m5stack-sticks3) |
 
 - **Big screen**: current mg/dL in 200px digits, trend arrow, age of reading. Tap anywhere -> graph.
 - **Graph screen**: 1h / 3h / 6h / 12h / 24h history, target band 70-200 shaded, threshold lines, `Back` button.
@@ -182,6 +183,35 @@ pio device monitor -p /dev/cu.usbserial-* -b 115200
 
 If the link fails with `ed25519_... file in wrong format` after building the P4: the WireGuard library writes objects to a shared `.pio/build/port` folder, so P4 (RISC-V) and M5 (Xtensa) builds clash. `rm -rf .pio/build/port` and build again.
 
+## M5Stack StickS3
+
+Same big-number-only screen as the M5StickC Plus, on an ESP32-S3 with 8 MB PSRAM (`include/board_m5sticks3.h`). Display and power values come from M5GFX's StickS3 board data, since the official docs leave gaps:
+
+- **Power**: the LCD and backlight are on the M5PM1 PMIC's L3B rail (I2C 0x6E on GPIO47/48). It is switched on by making PMIC GPIO2 a push-pull output and driving it **high**; until then the panel is dead.
+- **Display**: ST7789P3 over SPI (SCLK 40, MOSI 39, DC 45, CS 41, RST 21), offsets 52/40 like the StickC Plus. The backlight is PWM on GPIO38 (256 Hz). 1 % brightness starts at `BACKLIGHT_MIN_DUTY` so low HA settings stay readable.
+- **Buttons**: A = GPIO11 (front), B = GPIO12 (side), active low. Hold **A** for 2 s to open/close the WiFi setup hotspot.
+
+### WiFi setup (captive portal)
+
+`include/wifi_portal.h`, enabled per board with `WIFI_PORTAL 1`. There's no built-in network for this board in `secrets.h`, so a fresh stick goes straight to setup:
+
+1. The stick opens an open access point **`Glucose-XXXX`** (the last 4 hex digits of its MAC) and the screen says to join it.
+2. Join it from a phone. The stick answers every DNS lookup with its own address and redirects the OS connectivity checks, so the sign-in sheet pops up (otherwise open http://192.168.4.1).
+3. Pick a network from the scan (or type a hidden one), enter the password, and tap **Connect**. The page polls and shows success or the reason it failed.
+4. Credentials go through `wifi_mgr.h`, so they're saved only after they actually connect, alongside up to 8 saved networks. The hotspot closes 20 s after connecting.
+
+The hotspot also reopens by itself if WiFi has been down for 45 s (`PORTAL_AFTER_MS`). While it's up, the saved network is retried once a minute without scanning, so the phone isn't dropped. If that network comes back, the hotspot closes again. The portal runs in its own task, so the page stays responsive while the HA task blocks on HTTP.
+
+**WireGuard**: its own peer in the `#if defined(BOARD_M5STICKS3)` block in `secrets.h`; the server must let that tunnel IP reach HA.
+
+**Flashing**: native USB-C (`/dev/cu.usbmodem*`). If the stick doesn't show up, hold the power button until the green LED blinks (download mode). Afterwards it stays in download mode, even after an esptool/RTS reset, until you **single-click** the power button.
+
+```sh
+pio run -e m5sticks3 -t upload --upload-port /dev/cu.usbmodem*   # or -e m5sticks3-dummy
+```
+
+Restore UiFlow2 from a full-flash backup with `esptool --port <port> write-flash 0 <backup>.bin`.
+
 ## Display stability (CrowPanel, hard-won)
 
 The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes for that bus and shows up as flicker/artifacts. What works:
@@ -216,15 +246,17 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 - `include/board.h`   — picks the board header (`BOARD_WAVESHARE_P4_5` or CrowPanel)
 - `include/board_tdisplay_s3.h` — LilyGo T-Display-S3: ST7789 over `Bus_Parallel8` (LovyanGFX), LVGL partial render, PWM backlight, debounced side buttons
 - `include/board_m5stickc_plus.h` — M5StickC Plus: ST7789 over SPI (LovyanGFX), AXP192 power + LDO2 backlight, LVGL partial render
+- `include/board_m5sticks3.h` — M5StickS3: M5PM1 power-on (L3B), ST7789P3 over SPI (LovyanGFX), PWM backlight, buttons with long press
 - `include/board_crowpanel.h` — display (esp_lcd RGB, single PSRAM framebuffer + LVGL partial render), GT911 touch, backlight (V1.0 TCA9534 or V1.2+ ctrl MCU @0x30)
 - `include/board_waveshare_p4_5.h` — MIPI-DSI HX8394 panel, rotated flush, GT911 touch with reset, LEDC backlight
 - `include/glucose.h` — ring buffer, thresholds, trend calc, windowing, dummy source
 - `include/ha_source.h` — NTP, HA REST polling (readings, history backfill, brightness setting)
 - `include/wifi_mgr.h` — WiFi connection + NVS-saved credentials, scan/connect requests from the UI
-- `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare and M5StickC Plus builds)
+- `include/wg_tunnel.h` — optional WireGuard tunnel (Waveshare, M5StickC Plus and M5StickS3 builds)
+- `include/wifi_portal.h` — captive-portal WiFi setup: SoftAP + catch-all DNS + setup page (M5StickS3 build)
 - `include/ui.h`      — big-number and graph screens, scaled by `S()` for the panel size
 - `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
-- `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` / `_90.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main; `_90.c` M5StickC Plus main
+- `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` / `_90.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main; `_90.c` M5StickC Plus / StickS3 main
 - `src/font_status_icons.c` — wifi / lock / home glyphs from LVGL's FontAwesome5 file (`lv_font_conv --size 22 -r 0xF1EB,0xF023,0xF015`)
 - `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example

@@ -11,9 +11,10 @@
 
 #include "secrets.h"
 
-// WireGuard is only wired up for the Waveshare P4 and M5StickC Plus builds (library in their envs);
-// other boards ignore WG_ENABLE.
-#if !defined(WG_ENABLE) || !WG_ENABLE || !(defined(BOARD_WAVESHARE_P4_5) || defined(BOARD_M5STICKC_PLUS))
+// WireGuard is only wired up for the Waveshare P4, M5StickC Plus and M5StickS3 builds (library in
+// their envs); other boards ignore WG_ENABLE.
+#if !defined(WG_ENABLE) || !WG_ENABLE || \
+    !(defined(BOARD_WAVESHARE_P4_5) || defined(BOARD_M5STICKC_PLUS) || defined(BOARD_M5STICKS3))
 namespace wg {
 static constexpr bool enabled = false;
 static bool start() { return true; }

@@ -660,6 +660,40 @@ static void set_indicators(bool wifi, int vpn, bool ha) {
   }
 }
 
+// ---------- full-screen message (WiFi setup portal) ----------
+// Sits on the top layer, so it covers whichever screen is loaded. nullptr title hides it.
+static lv_obj_t *ov = nullptr, *ov_title, *ov_body, *ov_hint;
+static void show_overlay(const char *title, const char *body = "", const char *hint = "") {
+  if (!title) { if (ov) lv_obj_add_flag(ov, LV_OBJ_FLAG_HIDDEN); return; }
+  if (!ov) {
+    ov = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(ov);
+    lv_obj_set_size(ov, UI_W, UI_H);
+    lv_obj_set_style_bg_color(ov, C_BG, 0);
+    lv_obj_set_style_bg_opa(ov, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(ov, S(20), 0);
+    lv_obj_set_flex_flow(ov, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(ov, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(ov, S(10), 0);
+    lv_obj_t **ls[3] = {&ov_title, &ov_body, &ov_hint};
+    const lv_font_t *fonts[3] = {FONT_14, FONT_20, FONT_14};
+    const lv_color_t colors[3] = {C_MUTED, C_TEXT, C_MUTED};
+    for (int i = 0; i < 3; i++) {
+      *ls[i] = lv_label_create(ov);
+      lv_obj_set_width(*ls[i], LV_PCT(100));
+      lv_label_set_long_mode(*ls[i], LV_LABEL_LONG_WRAP);
+      lv_obj_set_style_text_align(*ls[i], LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_set_style_text_font(*ls[i], fonts[i], 0);
+      lv_obj_set_style_text_color(*ls[i], colors[i], 0);
+    }
+    lv_obj_set_style_text_color(ov_body, C_ACCENT, 0);
+  }
+  set_text_if_changed(ov_title, title);
+  set_text_if_changed(ov_body, body);
+  set_text_if_changed(ov_hint, hint);
+  lv_obj_remove_flag(ov, LV_OBJ_FLAG_HIDDEN);
+}
+
 // connection / source status shown in the corner ("" = hide)
 static void set_status(const char *s) {
   set_text_if_changed(big_status, s);

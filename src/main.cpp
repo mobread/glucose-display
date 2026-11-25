@@ -10,6 +10,9 @@ static volatile int pending_brightness = -1;
 #define WIFI_SETUP_UI 1
 #include "ui_wifi.h"
 #endif
+#if WIFI_PORTAL
+#include "wifi_portal.h"
+#endif
 #endif
 
 void setup() {
@@ -24,6 +27,9 @@ void setup() {
 #endif
   ha::on_brightness = [](int pct) { pending_brightness = pct; };  // applied on the main loop (Wire isn't cross-core safe)
   ha::begin();
+#if WIFI_PORTAL
+  portal::begin();
+#endif
 #else
   glucose::dummy::init();
   ui::init();
@@ -41,6 +47,36 @@ void loop() {
   if (btn & board::BTN_KEY) {
     if (lv_screen_active() != ui::scr_graph) ui::toggle_screen();
     else ui::next_window();
+  }
+#endif
+#if defined(BOARD_M5STICKS3) && USE_HA
+  // hold the front button (A) 2 s: open / close the WiFi setup hotspot
+  board::BtnEvents btn = board::poll_buttons();
+  if (btn.long_pressed & board::BTN_A) {
+    if (portal::active()) portal::request_stop(); else portal::request_start();
+  }
+#endif
+#if WIFI_PORTAL && USE_HA
+  static uint32_t last_portal_ui = 0;
+  if (millis() - last_portal_ui > 300) {
+    last_portal_ui = millis();
+    char ssid[33], reason[32], body[64];
+    net::State st = net::get_state(ssid, sizeof ssid, reason, sizeof reason);
+    switch (portal::phase) {
+      case portal::OFF:     ui::show_overlay(nullptr); break;
+      case portal::WAITING:
+        snprintf(body, sizeof body, "Join  %s", portal::ap_name);
+        ui::show_overlay("WiFi setup", body, "on your phone, then pick a network");
+        break;
+      case portal::CONNECTING: ui::show_overlay("Connecting to", ssid, "keep the setup page open"); break;
+      case portal::FAILED:
+        snprintf(body, sizeof body, "%s: %s", ssid, reason);
+        ui::show_overlay("Couldn't connect", body, "try again on the setup page");
+        break;
+      case portal::DONE:
+        ui::show_overlay("Connected to", st == net::CONNECTED ? ssid : "", "closing setup hotspot...");
+        break;
+    }
   }
 #endif
 #if USE_HA
