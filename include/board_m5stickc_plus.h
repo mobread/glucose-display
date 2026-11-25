@@ -1,6 +1,7 @@
 // Board support for M5StickC Plus (ESP32-PICO-D4, no PSRAM, 1.14" ST7789V2 135x240 on SPI).
 // Backlight and LCD power come from the AXP192 PMU (I2C 0x34): LDO2 = backlight, LDO3 = LCD logic.
-// Big-number screen only (no graph), so the buttons are unused.
+// Big-number screen only (no graph). Buttons: A = GPIO37 (front), B = GPIO39 (side), active low,
+// external pull-ups (input-only pins). Hold A: WiFi setup hotspot on/off; hold B: forget WiFi.
 // Pinout matches M5's M5StickCPlus library / LovyanGFX's autodetect for this board.
 #pragma once
 
@@ -16,6 +17,10 @@
 #define UI_W LCD_H_RES
 #define UI_H LCD_V_RES
 #define UI_NO_GRAPH 1
+#define WIFI_PORTAL 1   // captive-portal WiFi setup (wifi_portal.h)
+
+#define PIN_BTN_A 37
+#define PIN_BTN_B 39
 
 #define PIN_I2C_SDA 21
 #define PIN_I2C_SCL 22
@@ -131,6 +136,35 @@ static bool battery(int &pct, bool &charging, int &mv) {
   return true;
 }
 
+// ---------- buttons ----------
+enum : uint8_t { BTN_A = 1, BTN_B = 2 };
+
+struct BtnEvents { uint8_t pressed = 0, long_pressed = 0; };
+
+// Debounced. `pressed` fires on release after a short press, `long_pressed` once after held 2 s.
+// The debounce also hides the ESP32's GPIO36/39 glitches when WiFi powers the ADC (errata 3.11).
+static BtnEvents poll_buttons() {
+  static const uint8_t pins[2] = {PIN_BTN_A, PIN_BTN_B};
+  static bool stable[2] = {false, false}, last_raw[2] = {false, false}, long_fired[2] = {false, false};
+  static uint32_t changed_at[2] = {0, 0}, down_at[2] = {0, 0};
+  BtnEvents ev;
+  uint32_t now = millis();
+  for (int i = 0; i < 2; i++) {
+    bool down = digitalRead(pins[i]) == LOW;
+    if (down != last_raw[i]) { last_raw[i] = down; changed_at[i] = now; }
+    if (down != stable[i] && now - changed_at[i] > 30) {
+      stable[i] = down;
+      if (down) { down_at[i] = now; long_fired[i] = false; }
+      else if (!long_fired[i]) ev.pressed |= (1 << i);
+    }
+    if (stable[i] && !long_fired[i] && now - down_at[i] > 2000) {
+      long_fired[i] = true;
+      ev.long_pressed |= (1 << i);
+    }
+  }
+  return ev;
+}
+
 // ---------- LVGL ----------
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   const int w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
@@ -162,6 +196,10 @@ static void display_init() {
   lv_display_set_buffers(disp, buf1, nullptr, buf_px * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
 }
 
-static void init() { display_init(); }
+static void init() {
+  pinMode(PIN_BTN_A, INPUT);   // input-only pins, pulled up on the board
+  pinMode(PIN_BTN_B, INPUT);
+  display_init();
+}
 
 }  // namespace board

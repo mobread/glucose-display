@@ -83,7 +83,8 @@ static void request_connect(const char *ssid, const char *pass) {
 }
 
 // Forget every saved network and drop the connection; the state becomes NO_CONFIG, which is
-// what opens the captive portal (wifi_portal.h). The built-in WIFI_SSID is not used again.
+// what opens the captive portal (wifi_portal.h). An NVS flag ("nobuiltin") keeps the built-in
+// WIFI_SSID from being used after a reboot too; once a network is saved, that one comes first anyway.
 static void request_forget_all() {
   Lock l;
   forget_all_requested = true;
@@ -269,6 +270,13 @@ static void init() {
 }
 
 static void begin() {
+  bool no_builtin;   // set by forget-all: the user wiped WiFi, so start in setup, not on WIFI_SSID
+  {
+    Preferences p;
+    p.begin("wifi", true);
+    no_builtin = p.getBool("nobuiltin", false);
+    p.end();
+  }
   WiFi.persistent(false);   // we keep credentials in our own NVS namespace
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -278,7 +286,7 @@ static void begin() {
     strlcpy(cur_ssid, known[0].ssid, sizeof cur_ssid);
     strlcpy(cur_pass, known[0].pass, sizeof cur_pass);
     Serial.printf("[wifi] using saved network '%s' (%d saved)\n", cur_ssid, known_count);
-  } else if (strlen(WIFI_SSID)) {
+  } else if (strlen(WIFI_SSID) && !no_builtin) {
     strlcpy(cur_ssid, WIFI_SSID, sizeof cur_ssid);
     strlcpy(cur_pass, WIFI_PASS, sizeof cur_pass);
     Serial.printf("[wifi] using built-in network '%s'\n", cur_ssid);
@@ -298,6 +306,7 @@ static bool service() {
       Preferences p;   // wipe the whole namespace, so no old passwords stay in flash
       p.begin("wifi", false);
       p.clear();
+      p.putBool("nobuiltin", true);   // and don't fall back to WIFI_SSID after a reboot either
       p.end();
       cur_ssid[0] = cur_pass[0] = 0;
       save_on_connect = false;

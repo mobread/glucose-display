@@ -165,7 +165,8 @@ static void start(bool automatic) {
   submitted[0] = 0;
   auto_started = automatic;
   phase = WAITING;
-  Serial.printf("[portal] started: join '%s', then open http://%s\n", ap_name, AP_IP.toString().c_str());
+  Serial.printf("[portal] started: join '%s', then open http://%s (heap free %u, min %u)\n", ap_name,
+                AP_IP.toString().c_str(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
 }
 
 static void stop() {
@@ -176,7 +177,7 @@ static void stop() {
   WiFi.mode(WIFI_STA);
   net::hold_retries = false;
   phase = OFF;
-  Serial.println("[portal] stopped");
+  Serial.printf("[portal] stopped (heap free %u, min %u)\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
 }
 
 static void task(void *) {

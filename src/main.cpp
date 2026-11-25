@@ -49,7 +49,7 @@ void loop() {
     else ui::next_window();
   }
 #endif
-#if defined(BOARD_M5STICKS3) && USE_HA
+#if WIFI_PORTAL && USE_HA   // the M5 sticks
   // hold the front button (A) 2 s: open / close the WiFi setup hotspot
   // hold the side button (B) 2 s: forget all saved WiFi and go back to setup (hotspot opens itself)
   board::BtnEvents btn = board::poll_buttons();
