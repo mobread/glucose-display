@@ -1,2 +1,4 @@
 .pio/
 include/secrets.h
+esphome/secrets.yaml
+esphome/.esphome/

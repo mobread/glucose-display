@@ -1,0 +1,934 @@
+# LilyGO T-Display-S3 AMOLED (1.91", 536x240, no touch) as a Home Assistant desk controller.
+#
+# Pages (hold left to cycle): Glucose -> Lights -> Scenes -> Thermostat
+#   Left  button (BOOT, GPIO0):  press = next tile (or next page where there are no tiles;
+#                                on the thermostat page: setpoint down 1 degree)
+#                                hold  = next page
+#   Right button (GPIO21):       press = toggle light / run scene on the highlighted tile
+#                                (thermostat page: setpoint up 1 degree)
+#                                hold  = screen off / on
+# Both buttons also show up in HA as event entities ("press" / "hold") for your own automations.
+# After 45 s without a press it goes back to the glucose page; the glucose numbers drift a few
+# pixels every 2 minutes so the AMOLED doesn't burn in.
+#
+# Lights / scenes: the tile widgets, the lt*_on sensors and the ids[] lists in `activate` go together.
+# Build / flash:  esphome run esphome/glucose-amoled.yaml
+# In HA, enable "Allow the device to perform Home Assistant actions" on the device, or the
+# tiles and thermostat buttons can't change anything. Wi-Fi must be HA's own LAN (no WireGuard).
+
+esphome:
+  name: glucose-amoled
+  friendly_name: Glucose AMOLED
+  includes:
+    - glucose_helpers.h
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: draw_glucose
+      - script.execute: draw_thermostat
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Glucose-AMOLED setup"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time:
+      - seconds: 0
+        then:
+          - script.execute: draw_clock
+    on_time_sync:
+      then:
+        - script.execute: draw_clock
+
+globals:
+  - id: page          # 0 glucose, 1 lights, 2 scenes, 3 home
+    type: int
+    initial_value: "0"
+  - id: sel           # highlighted tile on the lights / scenes pages
+    type: int
+    initial_value: "0"
+  - id: pending_set   # setpoint chosen on the device, not yet confirmed by HA
+    type: float
+    initial_value: "NAN"
+  - id: last_input
+    type: uint32_t
+    initial_value: "0"
+
+# ---------------- display ----------------
+spi:
+  id: quad_spi
+  type: quad
+  clk_pin: 47
+  data_pins: [18, 7, 48, 5]
+
+display:
+  - platform: mipi_spi
+    id: amoled
+    model: T-DISPLAY-S3-AMOLED
+    dimensions:
+      width: 536
+      height: 240
+    transform:          # landscape, USB on the right
+      swap_xy: true
+      mirror_x: true
+      mirror_y: false
+    auto_clear_enabled: false
+    update_interval: never
+
+light:
+  - platform: mipi_spi
+    id: screen
+    display_id: amoled
+    name: Screen
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 0s
+
+font:
+  - file: "gfonts://Montserrat@600"
+    id: font_glucose
+    size: 110
+    glyphs: "0123456789-"
+  - file: "gfonts://Montserrat@500"
+    id: font_temp
+    size: 64
+    glyphs: "0123456789-.°"
+  - file: "gfonts://Montserrat@600"
+    id: font_setpoint
+    size: 100
+    glyphs: "0123456789-.°"
+  - file: &mdi
+      type: web
+      url: https://github.com/Pictogrammers/pictogrammers.github.io/raw/main/@mdi/font/7.4.47/fonts/materialdesignicons-webfont.ttf
+    id: icons_trend
+    size: 72
+    glyphs: ["\U000F005D", "\U000F0045", "\U000F0054", "\U000F005C", "\U000F0043", "\U000F02D6"]
+  - file: *mdi
+    id: icons_tile
+    size: 36
+    glyphs: ["\U000F0335", "\U000F03D8", "\U000F0374", "\U000F0415"]
+
+lvgl:
+  displays: [amoled]
+  buffer_size: 100%
+  bg_color: 0x000000
+  disp_bg_color: 0x000000
+  default_font: montserrat_20
+  style_definitions:
+    - id: tile
+      bg_color: 0x141A22
+      bg_opa: COVER
+      radius: 10
+      border_width: 3
+      border_color: 0x141A22
+      pad_all: 8
+    - id: tile_icon
+      text_font: icons_tile
+      text_color: 0x56606C
+  theme:
+    obj:
+      scrollbar_mode: "OFF"
+      checked:
+        border_color: 0x58A6FF
+    label:
+      checked:
+        text_color: 0xFFC93C        # light is on
+  top_layer:
+    widgets:
+      - label:
+          id: hdr_clock
+          text: "--:--"
+          text_font: montserrat_20
+          text_color: 0x9AA4AF
+          x: 10
+          y: 7
+      - label:
+          id: hdr_title
+          text: "Glucose"
+          text_font: montserrat_20
+          text_color: 0x9AA4AF
+          align: TOP_RIGHT
+          x: -10
+          y: 7
+  pages:
+    - id: pg_glucose
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            id: glu_box
+            x: 0
+            y: 34
+            width: 536
+            height: 200
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            widgets:
+              # Dexcom, left half
+              - label:
+                  text: "Dexcom"
+                  text_color: 0x7D8590
+                  x: 24
+                  y: 0
+              - label:
+                  id: dex_num
+                  text: "--"
+                  text_font: font_glucose
+                  text_color: 0x5A5A5A
+                  x: 14
+                  y: 40
+              - label:
+                  id: dex_arrow
+                  text: "\U000F02D6"
+                  text_font: icons_trend
+                  text_color: 0x5A5A5A
+                  x: 196
+                  y: 60
+              # second person (Medtronic CareLink), right half
+              - label:
+                  text: !secret carelink_label
+                  text_color: 0x7D8590
+                  x: 292
+                  y: 0
+              - label:
+                  id: cl_num
+                  text: "--"
+                  text_font: font_glucose
+                  text_color: 0x5A5A5A
+                  x: 282
+                  y: 40
+              - label:
+                  id: cl_arrow
+                  text: "\U000F02D6"
+                  text_font: icons_trend
+                  text_color: 0x5A5A5A
+                  x: 464
+                  y: 60
+              - label:
+                  id: cl_delta
+                  text: ""
+                  text_color: 0x7D8590
+                  x: 292
+                  y: 172
+
+    - id: pg_lights
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            id: lt0
+            styles: tile
+            x: 6
+            y: 38
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt0_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "Living Room"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: lt1
+            styles: tile
+            x: 272
+            y: 38
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt1_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "Kitchen"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: lt2
+            styles: tile
+            x: 6
+            y: 104
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt2_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "Overhead"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: lt3
+            styles: tile
+            x: 272
+            y: 104
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt3_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "Accents"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: lt4
+            styles: tile
+            x: 6
+            y: 170
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt4_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "Tree Lamp"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: lt5
+            styles: tile
+            x: 272
+            y: 170
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: lt5_icon
+                  styles: tile_icon
+                  text: "\U000F0335"
+                  align: LEFT_MID
+              - label:
+                  text: "COB Strip"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+
+    - id: pg_scenes
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            id: sc0
+            styles: tile
+            x: 6
+            y: 38
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc0_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "Morning"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: sc1
+            styles: tile
+            x: 272
+            y: 38
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc1_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "Warm"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: sc2
+            styles: tile
+            x: 6
+            y: 104
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc2_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "Full Bright"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: sc3
+            styles: tile
+            x: 272
+            y: 104
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc3_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "Movie Time"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: sc4
+            styles: tile
+            x: 6
+            y: 170
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc4_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "Bed Time"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+        - obj:
+            id: sc5
+            styles: tile
+            x: 272
+            y: 170
+            width: 258
+            height: 60
+            widgets:
+              - label:
+                  id: sc5_icon
+                  styles: tile_icon
+                  text: "\U000F03D8"
+                  align: LEFT_MID
+              - label:
+                  text: "All Off"
+                  text_font: montserrat_24
+                  text_color: 0xE6EDF3
+                  align: LEFT_MID
+                  x: 50
+
+    - id: pg_thermostat
+      bg_color: 0x000000
+      widgets:
+        - label:
+            text: "Inside now"
+            text_color: 0x7D8590
+            x: 24
+            y: 46
+        - label:
+            id: th_temp
+            text: "--"
+            text_font: font_temp
+            text_color: 0xE6EDF3
+            x: 20
+            y: 78
+        - label:
+            id: th_action_lbl
+            text: ""
+            text_font: montserrat_24
+            text_color: 0x9AA4AF
+            x: 24
+            y: 156
+        - label:
+            text: "Set to"
+            text_color: 0x7D8590
+            x: 290
+            y: 46
+        - label:
+            id: th_target
+            text: "--"
+            text_font: font_setpoint
+            text_color: 0xFF8A3D
+            x: 284
+            y: 68
+        # button hints along the bottom edge, next to the buttons
+        - label:
+            text: "\U000F0374"
+            text_font: icons_tile
+            text_color: 0x56606C
+            align: BOTTOM_LEFT
+            x: 14
+            y: -4
+        - label:
+            text: "\U000F0415"
+            text_font: icons_tile
+            text_color: 0x56606C
+            align: BOTTOM_RIGHT
+            x: -14
+            y: -4
+
+# ---------------- Home Assistant data ----------------
+sensor:
+  - platform: homeassistant
+    id: dex_val
+    entity_id: sensor.dexcom_glucose_value
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: cl_val
+    entity_id: !secret carelink_value_entity
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: cl_delta_val
+    entity_id: !secret carelink_delta_entity
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: glu_low
+    entity_id: input_number.glucose_panel_low
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: glu_high
+    entity_id: input_number.glucose_panel_high
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: th_cur
+    entity_id: climate.nest_thermostat
+    attribute: current_temperature
+    on_value: { then: [script.execute: draw_thermostat] }
+  - platform: homeassistant
+    id: th_set
+    entity_id: climate.nest_thermostat
+    attribute: temperature
+    on_value:
+      then:
+        - lambda: id(pending_set) = NAN;   # HA has the new setpoint (or someone changed it elsewhere)
+        - script.execute: draw_thermostat
+  - platform: adc
+    id: vbat
+    name: Battery voltage
+    pin: GPIO4
+    attenuation: 12db
+    filters:
+      - multiply: 2.0          # 1:1 divider on the board
+    update_interval: 60s
+  - platform: wifi_signal
+    name: WiFi signal
+    update_interval: 60s
+
+text_sensor:
+  - platform: homeassistant
+    id: dex_trend
+    entity_id: sensor.dexcom_glucose_trend
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: cl_trend
+    entity_id: !secret carelink_trend_entity
+    on_value: { then: [script.execute: draw_glucose] }
+  - platform: homeassistant
+    id: th_action
+    entity_id: climate.nest_thermostat
+    attribute: hvac_action
+    on_value: { then: [script.execute: draw_thermostat] }
+  - platform: homeassistant
+    id: th_mode
+    entity_id: climate.nest_thermostat
+    on_value: { then: [script.execute: draw_thermostat] }
+
+binary_sensor:
+  - platform: homeassistant
+    id: lt0_on
+    entity_id: light.living_room_lights
+    on_state:
+      - lvgl.widget.update:
+          id: lt0_icon
+          state:
+            checked: !lambda return x;
+  - platform: homeassistant
+    id: lt1_on
+    entity_id: light.kitchen_lights
+    on_state:
+      - lvgl.widget.update:
+          id: lt1_icon
+          state:
+            checked: !lambda return x;
+  - platform: homeassistant
+    id: lt2_on
+    entity_id: light.overhead_lights
+    on_state:
+      - lvgl.widget.update:
+          id: lt2_icon
+          state:
+            checked: !lambda return x;
+  - platform: homeassistant
+    id: lt3_on
+    entity_id: light.living_room_accents
+    on_state:
+      - lvgl.widget.update:
+          id: lt3_icon
+          state:
+            checked: !lambda return x;
+  - platform: homeassistant
+    id: lt4_on
+    entity_id: light.tree_floor_lamp
+    on_state:
+      - lvgl.widget.update:
+          id: lt4_icon
+          state:
+            checked: !lambda return x;
+  - platform: homeassistant
+    id: lt5_on
+    entity_id: light.living_room_cob_strip
+    on_state:
+      - lvgl.widget.update:
+          id: lt5_icon
+          state:
+            checked: !lambda return x;
+
+  # ---------------- buttons ----------------
+  - platform: gpio
+    id: btn_left
+    pin: { number: GPIO0, inverted: true, mode: { input: true, pullup: true } }
+    filters: [delayed_on_off: 20ms]
+    on_click:
+      min_length: 20ms
+      max_length: 700ms
+      then:
+        - script.execute: { id: on_button, which: 0, hold: false }
+    on_multi_click:
+      - timing: [ON for at least 800ms]
+        then:
+          - script.execute: { id: on_button, which: 0, hold: true }
+  - platform: gpio
+    id: btn_right
+    pin: { number: GPIO21, inverted: true, mode: { input: true, pullup: true } }
+    filters: [delayed_on_off: 20ms]
+    on_click:
+      min_length: 20ms
+      max_length: 700ms
+      then:
+        - script.execute: { id: on_button, which: 1, hold: false }
+    on_multi_click:
+      - timing: [ON for at least 800ms]
+        then:
+          - script.execute: { id: on_button, which: 1, hold: true }
+
+event:
+  - platform: template
+    id: ev_left
+    name: Left button
+    event_types: [press, hold]
+  - platform: template
+    id: ev_right
+    name: Right button
+    event_types: [press, hold]
+
+# ---------------- behaviour ----------------
+script:
+  - id: on_button
+    mode: queued
+    parameters:
+      which: int
+      hold: bool
+    then:
+      - lambda: |-
+          id(last_input) = millis();
+          (which == 0 ? id(ev_left) : id(ev_right))->trigger(hold ? "hold" : "press");
+      - if:   # a press while the screen is off only wakes it
+          condition:
+            and:
+              - light.is_off: screen
+              - lambda: return !(which == 1 && hold);
+          then:
+            - light.turn_on: screen
+          else:
+            - if:
+                condition:
+                  lambda: return which == 1 && hold;
+                then:
+                  - light.toggle: screen
+            - if:
+                condition:
+                  lambda: return id(page) == 3 && !hold;
+                then:
+                  - script.execute: { id: nudge_setpoint, step: !lambda "return which == 0 ? -1.0f : 1.0f;" }
+                else:
+                  - if:
+                      condition:
+                        lambda: return which == 1 && !hold;
+                      then:
+                        - script.execute: activate
+                  - if:
+                      condition:
+                        lambda: return which == 0;
+                      then:
+                        - lambda: |-
+                            int tiles = id(page) == 1 ? 6 : id(page) == 2 ? 6 : 0;
+                            if (!hold && tiles && id(sel) < tiles - 1) {
+                              id(sel)++;
+                              id(draw_sel).execute();
+                            } else {
+                              id(set_page).execute((id(page) + 1) % 4);
+                            }
+
+  - id: set_page
+    parameters:
+      p: int
+    then:
+      - lambda: |-
+          id(page) = p;
+          id(sel) = 0;
+      - if: { condition: { lambda: "return p == 0;" }, then: [lvgl.page.show: pg_glucose] }
+      - if: { condition: { lambda: "return p == 1;" }, then: [lvgl.page.show: pg_lights] }
+      - if: { condition: { lambda: "return p == 2;" }, then: [lvgl.page.show: pg_scenes] }
+      - if: { condition: { lambda: "return p == 3;" }, then: [lvgl.page.show: pg_thermostat] }
+      - lvgl.label.update:
+          id: hdr_title
+          text: !lambda |-
+            static const char *names[] = {"Glucose", "Lights", "Scenes", "Thermostat"};
+            return std::string(names[id(page)]);
+      - script.execute: draw_sel
+
+  - id: draw_sel
+    then:
+      - lvgl.widget.update:
+          id: lt0
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 0;
+      - lvgl.widget.update:
+          id: lt1
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 1;
+      - lvgl.widget.update:
+          id: lt2
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 2;
+      - lvgl.widget.update:
+          id: lt3
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 3;
+      - lvgl.widget.update:
+          id: lt4
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 4;
+      - lvgl.widget.update:
+          id: lt5
+          state:
+            checked: !lambda return id(page) == 1 && id(sel) == 5;
+      - lvgl.widget.update:
+          id: sc0
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 0;
+      - lvgl.widget.update:
+          id: sc1
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 1;
+      - lvgl.widget.update:
+          id: sc2
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 2;
+      - lvgl.widget.update:
+          id: sc3
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 3;
+      - lvgl.widget.update:
+          id: sc4
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 4;
+      - lvgl.widget.update:
+          id: sc5
+          state:
+            checked: !lambda return id(page) == 2 && id(sel) == 5;
+
+  - id: activate
+    then:
+      - if:
+          condition:
+            lambda: return id(page) == 1;
+          then:
+            - homeassistant.action:
+                action: light.toggle
+                data:
+                  entity_id: !lambda |-
+                    static const char *ids[] = {"light.living_room_lights", "light.kitchen_lights", "light.overhead_lights", "light.living_room_accents", "light.tree_floor_lamp", "light.living_room_cob_strip"};
+                    return std::string(ids[id(sel)]);
+      - if:
+          condition:
+            lambda: return id(page) == 2;
+          then:
+            - homeassistant.action:
+                action: !lambda |-
+                  static const char *ids[] = {"scene.morning", "scene.warm", "scene.full_bright", "scene.movie_time", "scene.bed_time", "script.all_lights_off"};
+                  return std::string(ids[id(sel)]).rfind("script.", 0) == 0 ? std::string("script.turn_on")
+                                                                              : std::string("scene.turn_on");
+                data:
+                  entity_id: !lambda |-
+                    static const char *ids[] = {"scene.morning", "scene.warm", "scene.full_bright", "scene.movie_time", "scene.bed_time", "script.all_lights_off"};
+                    return std::string(ids[id(sel)]);
+
+  - id: draw_glucose
+    then:
+      - lvgl.label.update:
+          id: dex_num
+          text: !lambda return glucose_text(id(dex_val).state);
+          text_color: !lambda return lv_color_hex(glucose_rgb(id(dex_val).state, id(glu_low).state, id(glu_high).state));
+      - lvgl.label.update:
+          id: dex_arrow
+          text: !lambda return trend_glyph(id(dex_trend).state);
+          text_color: !lambda return lv_color_hex(glucose_rgb(id(dex_val).state, id(glu_low).state, id(glu_high).state));
+      - lvgl.label.update:
+          id: cl_num
+          text: !lambda return glucose_text(id(cl_val).state);
+          text_color: !lambda return lv_color_hex(glucose_rgb(id(cl_val).state, id(glu_low).state, id(glu_high).state));
+      - lvgl.label.update:
+          id: cl_arrow
+          text: !lambda return trend_glyph(id(cl_trend).state);
+          text_color: !lambda return lv_color_hex(glucose_rgb(id(cl_val).state, id(glu_low).state, id(glu_high).state));
+      - lvgl.label.update:
+          id: cl_delta
+          text: !lambda |-
+            float d = id(cl_delta_val).state;
+            if (std::isnan(d) || std::isnan(id(cl_val).state)) return std::string("");
+            char b[24];
+            snprintf(b, sizeof b, "%+d since last", (int) lroundf(d));
+            return std::string(b);
+
+  - id: nudge_setpoint
+    parameters:
+      step: float
+    then:
+      - lambda: |-
+          float base = !std::isnan(id(pending_set)) ? id(pending_set) : id(th_set).state;
+          if (std::isnan(base)) return;     // off, or heat/cool range mode: nothing to nudge
+          id(pending_set) = std::min(90.0f, std::max(50.0f, roundf(base) + step));
+      - script.execute: draw_thermostat
+      - script.execute: send_setpoint
+
+  # sent 1.5 s after the last press, so several taps make one change in HA
+  - id: send_setpoint
+    mode: restart
+    then:
+      - delay: 1500ms
+      - if:
+          condition:
+            lambda: return !std::isnan(id(pending_set));
+          then:
+            - homeassistant.action:
+                action: climate.set_temperature
+                data:
+                  entity_id: climate.nest_thermostat
+                  temperature: !lambda return std::to_string((int) id(pending_set));
+            - delay: 15s      # HA didn't confirm: show its setpoint again
+            - lambda: id(pending_set) = NAN;
+            - script.execute: draw_thermostat
+
+  - id: draw_thermostat
+    then:
+      - lvgl.label.update:
+          id: th_temp
+          text: !lambda |-
+            float t = id(th_cur).state;
+            if (std::isnan(t)) return std::string("--");
+            char b[12]; snprintf(b, sizeof b, "%.0f°", t);
+            return std::string(b);
+      - lvgl.label.update:
+          id: th_target
+          text: !lambda |-
+            float t = !std::isnan(id(pending_set)) ? id(pending_set) : id(th_set).state;
+            if (std::isnan(t)) return std::string("--");
+            char b[12]; snprintf(b, sizeof b, "%.0f°", t);
+            return std::string(b);
+          text_color: !lambda |-
+            if (!std::isnan(id(pending_set))) return lv_color_hex(0xFFFFFF);   // not sent yet
+            const std::string &m = id(th_mode).state;
+            return lv_color_hex(m == "cool" ? 0x58A6FF : m == "heat" ? 0xFF8A3D : 0x7D8590);
+      - lvgl.label.update:
+          id: th_action_lbl
+          text: !lambda |-
+            std::string a = id(th_action).state, m = id(th_mode).state;
+            if (m == "off") return std::string("Off");
+            if (a == "heating") return std::string("Heating");
+            if (a == "cooling") return std::string("Cooling");
+            if (!m.empty()) m[0] = toupper(m[0]);
+            return m + (a.empty() ? "" : " - idle");
+
+  - id: draw_clock
+    then:
+      - lvgl.label.update:
+          id: hdr_clock
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[8];
+            snprintf(b, sizeof b, "%d:%02d", t.hour % 12 == 0 ? 12 : t.hour % 12, t.minute);
+            return std::string(b);
+
+interval:
+  - interval: 5s
+    then:
+      - if:   # back to glucose after 45 s idle
+          condition:
+            lambda: return id(page) != 0 && millis() - id(last_input) > 45000;
+          then:
+            - script.execute: { id: set_page, p: 0 }
+  - interval: 2min
+    then:   # AMOLED burn-in: drift the glucose numbers around a little
+      - lvgl.widget.update:
+          id: glu_box
+          x: !lambda return (int) (esp_random() % 9) - 4;
+          y: !lambda return 34 + (int) (esp_random() % 7) - 3;

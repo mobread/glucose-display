@@ -224,6 +224,38 @@ pio run -e m5sticks3 -t upload --upload-port /dev/cu.usbmodem*   # or -e m5stick
 
 Restore UiFlow2 from a full-flash backup with `esptool --port <port> write-flash 0 <backup>.bin`.
 
+## LilyGo T-Display-S3 AMOLED (ESPHome)
+
+A different approach from the other boards: this one runs [ESPHome](https://esphome.io) instead of this repo's firmware, as a Home Assistant desk controller (`esphome/glucose-amoled.yaml`). It shows up in HA as its own device, with a screen brightness light, two button event entities, WiFi signal and battery voltage. It has no access token and no WireGuard: HA connects *to* it, so it has to be on HA's own LAN.
+
+Board: ESP32-S3, 16 MB flash, 8 MB PSRAM, 1.91" RM67162 AMOLED (536x240, QSPI), no touch. ESPHome's `mipi_spi` driver has it as model `T-DISPLAY-S3-AMOLED`; landscape is a hardware `transform` (`swap_xy` + `mirror_x`), since LVGL won't take the display's `rotation`.
+
+Pages:
+1. **Glucose**: Dexcom on the left, a second person through Medtronic CareLink on the right (with the change since the last reading). Colours use the `glucose_panel_low` / `_high` helpers.
+2. **Lights**: six tiles. The bulb turns yellow when the light is on.
+3. **Scenes**: six tiles (scenes, or scripts).
+4. **Thermostat**: indoor temperature, heating/cooling, and the setpoint.
+
+Buttons:
+- **Left (BOOT)**: tap = next tile (next page where there are none), hold = next page. On the thermostat page a tap is setpoint −1°.
+- **Right**: tap = toggle the light / run the scene, hold = screen off/on. On the thermostat page a tap is +1°.
+- Setpoint taps are sent once you stop pressing for 1.5 s, so several taps make one change. The pending value shows white until HA confirms it. Nothing happens in heat/cool range mode.
+- Both buttons also fire `press` / `hold` events in HA for your own automations.
+
+It goes back to the glucose page after 45 s idle. The glucose numbers drift a few pixels every 2 minutes against AMOLED burn-in.
+
+Setup:
+1. Copy `esphome/secrets.yaml.example` to `esphome/secrets.yaml` (gitignored) and fill it in. The CareLink entity names live there too.
+2. Edit the light / scene / thermostat entity ids in the YAML. The lights' tiles, their `lt*_on` sensors and the `ids[]` lists in the `activate` script must stay in the same order.
+3. Install ESPHome (`python3 -m venv ~/.esphome-venv && ~/.esphome-venv/bin/pip install esphome`), then flash over USB the first time and over WiFi after that:
+   ```sh
+   cd esphome
+   esphome run glucose-amoled.yaml --device /dev/cu.usbmodem*   # later: --device glucose-amoled.local
+   ```
+4. Add it in HA (Settings > Devices > ESPHome, discovered, then paste `api_key`). Then, in the device's **Configure**, enable **Allow the device to perform Home Assistant actions**, or the tiles and thermostat can't change anything.
+
+If it can't join WiFi it opens a `Glucose-AMOLED setup` hotspot (password `fallback_ap_password`) to pick another network.
+
 ## Display stability (CrowPanel, hard-won)
 
 The ESP32-S3 scans the RGB panel straight out of PSRAM; WiFi traffic competes for that bus and shows up as flicker/artifacts. What works:
@@ -270,6 +302,7 @@ esptool --port COM5 --baud 460800 write-flash 0 <your-backup>.bin
 - `include/ui_wifi.h` — WiFi setup screen (Waveshare build)
 - `src/font_glucose_200.c` / `_360.c` / `_72.c` / `_112.c` / `_90.c` — Montserrat-Medium digits (`lv_font_conv`): CrowPanel main, Waveshare main, Waveshare graph header, T-Display-S3 main; `_90.c` M5StickC Plus / StickS3 main
 - `src/font_status_icons.c` — wifi / lock / home glyphs from LVGL's FontAwesome5 file (`lv_font_conv --size 22 -r 0xF1EB,0xF023,0xF015`)
+- `esphome/glucose-amoled.yaml` — T-Display-S3 AMOLED controller (ESPHome, LVGL); `glucose_helpers.h` maps trend states to arrows and glucose values to colours
 - `partitions_p4.csv` — Waveshare partition table (8 MB app)
 - `boards/`, `partitions.csv`, `sdkconfig.defaults*` — from Elecrow's official V1.3-1.5 PlatformIO example
 
